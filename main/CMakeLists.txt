@@ -50,6 +50,7 @@ set( SRC_FILES
     "dacp_client.c"
     "dlna/source_arbiter.c"
     "dlna/dlna_renderer.c"
+    "dlna/dlna_stream.c"
     "dlna/dlna_upnp.c"
 )
 

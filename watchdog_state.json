@@ -1,0 +1,10 @@
+watchdog started 2026-09-10 00:12:05
+[00:15:46] device reachable (ICMP)
+[00:17:46] WARN: HTTP not up yet, will try OTA anyway
+[00:17:51] OTA attempt 1...
+[00:18:12] OTA failed rc, waiting 20s
+[00:18:32] OTA attempt 2...
+[00:18:32] OTA failed rc, waiting 20s
+[00:18:52] OTA attempt 3...
+[00:18:52] OTA failed rc, waiting 20s
+[00:19:12] OTA FAILED after 3 attempts

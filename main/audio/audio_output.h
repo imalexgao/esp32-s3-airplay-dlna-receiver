@@ -315,4 +315,19 @@ void audio_output_get_fu_probe(fu_volume_probe_t *out);
  * is at full scale (quiet playback is then caused by the speaker itself).
  */
 float audio_output_get_peak_dbfs(void);
+
+/**
+ * Feed decoded PCM from an external source (DLNA/UPnP renderer) into the
+ * shared USB-host output chain: resample -> LED VU -> device volume ->
+ * channel mode -> FIFO -> USB iso OUT. The source arbiter keeps a single
+ * active source, so callers must only feed while the DLNA source is the
+ * active one.
+ *
+ * @param pcm     Interleaved stereo int16 PCM
+ * @param samples Number of frames (samples per channel)
+ * @param rate    Source sample rate in Hz (0 = keep previous)
+ * @return ESP_OK on success
+ */
+esp_err_t audio_output_usb_host_feed_pcm(const int16_t *pcm, size_t samples,
+                                         uint32_t rate);
 #endif /* CONFIG_AUDIO_OUTPUT_USB_HOST */

@@ -19,6 +19,7 @@
 #include "spiffs_storage.h"
 #ifdef CONFIG_DLNA_ENABLE
 #include "dlna/dlna_renderer.h"
+#include "dlna/dlna_stream.h"
 #include "dlna/source_arbiter.h"
 #endif
 
@@ -347,6 +348,7 @@ void app_main(void) {
   led_init();
 #ifdef CONFIG_DLNA_ENABLE
   dlna_renderer_init();
+  dlna_stream_init();
   source_arbiter_init();
 #endif
   log_dram("spiffs+log");

@@ -2193,6 +2193,68 @@ static void playback_task(void *arg) {
   }
 }
 
+/* ── External-source PCM feed (DLNA/UPnP renderer) ───────────────────────────
+ *
+ * DLNA decoded PCM enters the SAME chain the AirPlay path uses:
+ * resample -> LED VU -> device volume -> channel mode -> FIFO -> USB iso OUT.
+ * The source arbiter guarantees a single active source, so this never races
+ * the AirPlay playback task above (AirPlay is paused while DLNA feeds).
+ */
+esp_err_t audio_output_usb_host_feed_pcm(const int16_t *pcm, size_t samples,
+                                         uint32_t rate) {
+  static int16_t *s_feed_rbuf = NULL; /* resampler output scratch */
+  static uint8_t *s_feed_conv = NULL; /* >16-bit device format scratch */
+  static uint32_t s_feed_rate = 0;
+
+  if (!pcm || samples == 0) {
+    return ESP_OK;
+  }
+  if (!s_feed_rbuf) {
+    s_feed_rbuf = malloc((size_t)MAX_RESAMPLE_FRAMES * 2 * sizeof(int16_t));
+    if (!s_feed_rbuf) {
+      return ESP_ERR_NO_MEM;
+    }
+  }
+  if (!s_feed_conv) {
+    s_feed_conv = malloc((size_t)MAX_RESAMPLE_FRAMES * 2 * 4);
+    if (!s_feed_conv) {
+      return ESP_ERR_NO_MEM;
+    }
+  }
+  if (!s_streaming) {
+    return ESP_OK; /* no device attached; drop (standby) */
+  }
+
+  if (rate > 0 && rate != s_feed_rate) {
+    audio_resample_init(rate, s_out_rate, 2);
+    s_feed_rate = rate;
+  }
+
+  int16_t *play_buf = (int16_t *)pcm;
+  size_t play_samples = samples;
+  if (audio_resample_is_active()) {
+    play_samples = audio_resample_process(pcm, samples, s_feed_rbuf,
+                                          MAX_RESAMPLE_FRAMES);
+    play_buf = s_feed_rbuf;
+  }
+  if (play_samples == 0) {
+    return ESP_OK;
+  }
+
+  led_audio_feed(play_buf, play_samples);
+  apply_volume(play_buf, play_samples * 2);
+  apply_channel_mode(play_buf, play_samples);
+
+  if (s_frame_bytes == 4) {
+    fifo_push((const uint8_t *)play_buf, play_samples * 4);
+  } else {
+    int n = expand_pcm(play_buf, (int)play_samples * 2, s_feed_conv,
+                       s_out_subslot);
+    fifo_push(s_feed_conv, (size_t)n);
+  }
+  return ESP_OK;
+}
+
 /* ── Public API ──────────────────────────────────────────────────────────── */
 esp_err_t audio_output_init(void) {
   /* Called twice: early in app_main (USB up before the network waits, so a

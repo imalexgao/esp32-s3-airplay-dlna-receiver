@@ -2690,7 +2690,11 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_uri_handlers += 11; // tuning page + HF1/HF3 get/post/commit/revert
 #endif
   config.max_resp_headers = 8;
-  config.stack_size = 16384; // DLNA SOAP handlers need ~5KB of stack; keep headroom
+  /* httpd allocates ONE task of stack_size per open socket (2-3 here), so
+   * this is a live RAM cost, not just headroom. DLNA SOAP handlers peak at
+   * ~9.5KB (2048 body + 2048 resp + XML parsing), so 12288 keeps them safe
+   * while bounding total httpd stack to ~36KB worst case (vs 48KB at 16K). */
+  config.stack_size = 12288; // DLNA SOAP handlers need ~9.5KB of stack
 
   esp_err_t err = httpd_start(&s_server, &config);
   if (err != ESP_OK) {

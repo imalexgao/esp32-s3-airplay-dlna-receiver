@@ -8,6 +8,7 @@
 #include "esp_timer.h"
 
 #include "audio/audio_output.h"
+#include "dlna/dlna_stream.h"
 #include "dlna/source_arbiter.h"
 
 static const char *TAG = "dlna_renderer";
@@ -56,11 +57,19 @@ void dlna_renderer_set_uri(const char *uri, const char *metadata) {
 }
 
 void dlna_renderer_play(void) {
+  bool was_paused = (s_state == DLNA_STATE_PAUSED);
   s_pos_base = clock_now();
   clock_start();
   s_state = DLNA_STATE_PLAYING;
   /* Last-writer-wins: DLNA now owns the output. */
   source_arbiter_activate_dlna();
+  if (s_uri[0]) {
+    if (was_paused) {
+      dlna_stream_resume();
+    } else {
+      dlna_stream_play(s_uri);
+    }
+  }
   ESP_LOGI(TAG, "DLNA PLAY (source arbiter: dlna active)");
 }
 
@@ -70,6 +79,7 @@ void dlna_renderer_pause(void) {
   }
   s_state = DLNA_STATE_PAUSED;
   source_arbiter_release_dlna();
+  dlna_stream_pause();
   ESP_LOGI(TAG, "DLNA PAUSE (output released)");
 }
 
@@ -77,6 +87,7 @@ void dlna_renderer_stop(void) {
   s_pos_base = 0.0;
   s_state = DLNA_STATE_STOPPED;
   source_arbiter_release_dlna();
+  dlna_stream_stop();
   ESP_LOGI(TAG, "DLNA STOP (output released)");
 }
 
@@ -85,6 +96,7 @@ void dlna_renderer_seek(double seconds) {
   if (s_state == DLNA_STATE_PLAYING) {
     clock_start();
   }
+  dlna_stream_seek(seconds);
   ESP_LOGI(TAG, "DLNA SEEK to %.1fs", s_pos_base);
 }
 
@@ -101,11 +113,19 @@ const char *dlna_renderer_get_metadata(void) {
 }
 
 double dlna_renderer_get_position(void) {
+  /* M2: prefer the stream clock when the transport is running. */
+  if (dlna_stream_is_playing()) {
+    return dlna_stream_get_position();
+  }
   return clock_now();
 }
 
 double dlna_renderer_get_duration(void) {
-  /* M1: unknown until the stream is opened (M2). */
+  /* M2: report the stream duration when known. */
+  double d = dlna_stream_get_duration();
+  if (d > 0.0) {
+    return d;
+  }
   return 0.0;
 }
 
