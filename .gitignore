@@ -47,3 +47,7 @@ check_msg.ps1
 watchdog.py
 watchdog_state.json
 commit_msg*.txt
+watchdog2.py
+watchdog3.py
+.ota_done
+醒后必读.md

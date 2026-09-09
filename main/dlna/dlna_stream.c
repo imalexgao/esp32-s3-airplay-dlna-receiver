@@ -9,14 +9,14 @@
 
 #include "audio/audio_output.h"
 #include "dlna/dlna_renderer.h"
+#include "minimp3.h"
 
 static const char *TAG = "dlna_stream";
 
 /* ── M2 scope ──────────────────────────────────────────────────────────────
- * Transport is WAV/PCM passthrough first: it validates the whole chain
- * (HTTP pull -> shared USB pipeline -> speaker) with zero codec deps.
- * MP3/AAC/FLAC software decoding lands as the next step; unknown formats
- * are detected, logged and the stream stops cleanly.
+ * Transport: WAV/PCM passthrough + MP3 software decode (minimp3, single-file
+ * public-domain decoder). FLAC/AAC land next; unknown formats are detected,
+ * logged and the stream stops cleanly.
  */
 
 #define STREAM_TASK_STACK 8192
@@ -24,6 +24,14 @@ static const char *TAG = "dlna_stream";
 #define HTTP_BUF_SIZE 4096
 #define PCM_CHUNK_FRAMES 1024 /* ~23 ms at 44.1 kHz */
 #define HEADER_SNIFF 64
+
+/* MP3 streaming state (minimp3) */
+#define MP3_IN_CAP 16384
+#define MP3_OUT_FRAMES 2304 /* two max MP3 frames, per channel */
+static uint8_t s_mp3_in[MP3_IN_CAP];
+static size_t s_mp3_in_len = 0;
+static mp3dec_t s_mp3_dec;
+static int16_t s_mp3_out[MP3_OUT_FRAMES * 2];
 
 typedef enum {
   CMD_PLAY = 0,
@@ -94,47 +102,51 @@ typedef struct {
   uint16_t channels;
   uint16_t bits;
   uint64_t data_remaining; /* bytes of PCM still expected (0 = unknown) */
+  uint64_t data_total;     /* full data-chunk length in bytes (duration) */
   uint64_t data_pos;       /* PCM bytes consumed so far */
 } wav_ctx_t;
 
 /* Parse RIFF chunks from a byte stream. Returns:
- *   >0 : PCM bytes appended to out/out_cap (via feed)
- *    0 : need more bytes (buffer full -> advance anyway)
+ *   >0 : PCM frames produced (caller feeds them)
+ *    0 : need more bytes
  *   -1 : fatal error
- * Feed callback keeps chunk state between calls. */
+ * Parses the fmt chunk (rate/channels/bits) and streams the data chunk.
+ * Chunk state persists between calls via the static locals. */
 static int wav_consume(wav_ctx_t *ctx, const uint8_t *buf, size_t len,
                        int16_t *pcm, size_t pcm_cap, size_t *pcm_frames) {
-  static uint8_t chunk[8];        /* current chunk header */
-  static size_t chunk_off = 0;
-  static uint32_t chunk_len = 0;  /* remaining bytes in current chunk */
-  static bool in_data = false;
-  static bool skip = false;       /* inside a non-PCM chunk */
+  static uint8_t header[8];
+  static size_t header_off = 0;
+  static uint32_t chunk_len = 0;
+  static uint8_t fmt_buf[16];  /* fmt chunk body, first 16 bytes */
+  static size_t fmt_off = 0;
+  static uint32_t chunk_kind = 0; /* 0 none, 1 fmt, 2 data, 3 skip */
+  static uint32_t skip_remaining = 0;
 
   size_t i = 0;
   *pcm_frames = 0;
 
   while (i < len) {
-    if (!in_data && !skip && chunk_off < 8) {
-      /* read a chunk header: "XXXX" + u32 LE */
-      size_t need = 8 - chunk_off;
+    if (chunk_kind == 0) {
+      /* reading a chunk header: "XXXX" + u32 LE */
+      size_t need = 8 - header_off;
       size_t take = len - i < need ? len - i : need;
-      memcpy(chunk + chunk_off, buf + i, take);
-      chunk_off += take;
+      memcpy(header + header_off, buf + i, take);
+      header_off += take;
       i += take;
-      if (chunk_off == 8) {
-        uint32_t id = chunk[0] | (chunk[1] << 8) | (chunk[2] << 16) |
-                      ((uint32_t)chunk[3] << 24);
-        chunk_len = (uint32_t)chunk[4] | ((uint32_t)chunk[5] << 8) |
-                    ((uint32_t)chunk[6] << 16) | ((uint32_t)chunk[7] << 24);
-        chunk_off = 0;
+      if (header_off == 8) {
+        uint32_t id = header[0] | ((uint32_t)header[1] << 8) |
+                      ((uint32_t)header[2] << 16) | ((uint32_t)header[3] << 24);
+        chunk_len = (uint32_t)header[4] | ((uint32_t)header[5] << 8) |
+                    ((uint32_t)header[6] << 16) | ((uint32_t)header[7] << 24);
+        header_off = 0;
         if (id == 0x20746D66) { /* 'fmt ' */
-          /* fmt comes before data; cache rate/ch/bits from the stream. */
-          in_data = false;
-          skip = true;
-          ctx->have_fmt = true;
+          chunk_kind = 1;
+          fmt_off = 0;
+          ctx->have_fmt = false;
         } else if (id == 0x61746164) { /* 'data' */
-          in_data = true;
+          chunk_kind = 2;
           ctx->data_remaining = chunk_len;
+          ctx->data_total = chunk_len;
           if (!ctx->have_fmt) {
             ESP_LOGW(TAG, "WAV data chunk before fmt; assuming 44.1k/16/2");
             ctx->rate = 44100;
@@ -142,68 +154,100 @@ static int wav_consume(wav_ctx_t *ctx, const uint8_t *buf, size_t len,
             ctx->bits = 16;
           }
         } else {
-          in_data = false;
-          skip = true;
+          chunk_kind = 3;
+          skip_remaining = chunk_len;
         }
       }
       continue;
     }
 
-    if (in_data) {
+    if (chunk_kind == 1) {
+      /* collect fmt body (need 16 bytes) */
+      size_t need = 16 - fmt_off;
+      size_t take = len - i < need ? len - i : need;
+      memcpy(fmt_buf + fmt_off, buf + i, take);
+      fmt_off += take;
+      i += take;
+      if (fmt_off == 16) {
+        uint16_t audio_format = fmt_buf[0] | (fmt_buf[1] << 8);
+        uint16_t channels = fmt_buf[2] | (fmt_buf[3] << 8);
+        uint32_t rate = (uint32_t)fmt_buf[4] | ((uint32_t)fmt_buf[5] << 8) |
+                        ((uint32_t)fmt_buf[6] << 16) |
+                        ((uint32_t)fmt_buf[7] << 24);
+        uint16_t bits = fmt_buf[14] | (fmt_buf[15] << 8);
+        if (audio_format != 1) { /* PCM only for now */
+          ESP_LOGE(TAG, "WAV audio format %u unsupported (PCM=1)",
+                   audio_format);
+          return -1;
+        }
+        if (bits != 16 && bits != 24) {
+          ESP_LOGE(TAG, "WAV bit depth %u unsupported (16/24)", bits);
+          return -1;
+        }
+        ctx->rate = rate;
+        ctx->channels = channels ? channels : 2;
+        ctx->bits = bits;
+        ctx->have_fmt = true;
+        /* skip the rest of the fmt chunk body */
+        skip_remaining = chunk_len > 16 ? chunk_len - 16 : 0;
+        chunk_kind = 3;
+      }
+      continue;
+    }
+
+    if (chunk_kind == 2) {
+      /* data chunk: convert PCM bytes to int16 stereo frames */
       size_t avail = chunk_len;
       if (avail > len - i) {
         avail = len - i;
       }
       if (avail == 0) {
-        in_data = false;
-        skip = true; /* next header */
+        chunk_kind = 0; /* next header */
         continue;
       }
-      /* Convert bytes to int16 stereo frames on the fly. */
       const uint8_t *p = buf + i;
-      size_t frames_in = avail / (ctx->channels * (ctx->bits / 8));
+      size_t frame_bytes = ctx->channels * (ctx->bits / 8);
+      if (frame_bytes == 0) {
+        return -1;
+      }
+      size_t frames_in = avail / frame_bytes;
       size_t cap = pcm_cap / 2;
       if (frames_in > cap) {
         frames_in = cap;
       }
       if (frames_in > 0) {
         if (ctx->bits == 16) {
-          memcpy(pcm, p, frames_in * ctx->channels * 2);
-        } else if (ctx->bits == 24) {
-          /* 24-bit LE -> shift right into int16 */
+          memcpy(pcm, p, frames_in * frame_bytes);
+        } else { /* 24-bit LE -> int16 (high bits) */
           for (size_t f = 0; f < frames_in * ctx->channels; f++) {
             int32_t v = (int32_t)p[f * 3] | ((int32_t)p[f * 3 + 1] << 8) |
                         ((int32_t)p[f * 3 + 2] << 16);
             pcm[f] = (int16_t)(v >> 8);
           }
-        } else {
-          return -1; /* unsupported bit depth */
         }
         *pcm_frames = frames_in;
-        ctx->data_pos += frames_in * ctx->channels * (ctx->bits / 8);
-        chunk_len -= frames_in * ctx->channels * (ctx->bits / 8);
-        i += frames_in * ctx->channels * (ctx->bits / 8);
+        ctx->data_pos += frames_in * frame_bytes;
+        chunk_len -= (uint32_t)(frames_in * frame_bytes);
+        i += frames_in * frame_bytes;
         if (chunk_len == 0) {
-          in_data = false;
-          skip = true;
+          chunk_kind = 0;
         }
         return 1; /* caller feeds one PCM chunk */
       }
-      /* frame-aligned but zero-capacity: force progress */
+      /* frame-aligned but zero capacity: force progress */
       i = len;
       return 1;
     }
 
-    if (skip) {
-      size_t skip_n = chunk_len;
-      if (skip_n > len - i) {
-        skip_n = len - i;
-      }
-      i += skip_n;
-      chunk_len -= skip_n;
-      if (chunk_len == 0) {
-        skip = false;
-      }
+    /* chunk_kind == 3: skip body */
+    size_t skip_n = skip_remaining;
+    if (skip_n > len - i) {
+      skip_n = len - i;
+    }
+    i += skip_n;
+    skip_remaining -= (uint32_t)skip_n;
+    if (skip_remaining == 0) {
+      chunk_kind = 0;
     }
   }
   return 0;
@@ -235,6 +279,63 @@ static void feed_pcm(int16_t *pcm, size_t frames) {
   }
   audio_output_usb_host_feed_pcm(pcm, frames, s_rate);
   s_pcm_frames_played += frames;
+}
+
+/* Feed HTTP bytes into the MP3 decoder; decode and feed as many frames as
+ * the input allows. Returns frames fed (0 = need more input). */
+static size_t mp3_feed(const uint8_t *buf, size_t len) {
+  if (s_mp3_in_len + len > MP3_IN_CAP) {
+    /* Keep the newest bytes, drop the oldest (should not happen once frames
+     * are consumed, but protects against a pathological header stream). */
+    size_t overflow = s_mp3_in_len + len - MP3_IN_CAP;
+    size_t keep = MP3_IN_CAP - len;
+    memmove(s_mp3_in, s_mp3_in + overflow, keep);
+    s_mp3_in_len = keep;
+  }
+  memcpy(s_mp3_in + s_mp3_in_len, buf, len);
+  s_mp3_in_len += len;
+
+  size_t fed = 0;
+  while (s_mp3_in_len > 0) {
+    mp3dec_frame_info_t info;
+    memset(&info, 0, sizeof(info));
+    int n = mp3dec_decode_frame(&s_mp3_dec, s_mp3_in, (int)s_mp3_in_len,
+                                s_mp3_out, &info);
+    if (n <= 0) {
+      size_t skip = (size_t)info.frame_offset;
+      if (skip > 0) {
+        /* Skipped data (ID3 / junk): consume it and continue. */
+        if (skip > s_mp3_in_len) {
+          skip = s_mp3_in_len;
+        }
+        memmove(s_mp3_in, s_mp3_in + skip, s_mp3_in_len - skip);
+        s_mp3_in_len -= skip;
+        continue;
+      }
+      break; /* need more input */
+    }
+    if (info.hz > 0 && (uint32_t)info.hz != s_rate) {
+      s_rate = (uint32_t)info.hz;
+      ESP_LOGI(TAG, "MP3 rate %u Hz", s_rate);
+    }
+    if (info.channels > 0 && (uint32_t)info.channels != s_channels) {
+      s_channels = (uint32_t)info.channels;
+    }
+    size_t frames = (size_t)n;
+    feed_pcm(s_mp3_out, frames);
+    fed += frames;
+    size_t consumed = info.frame_offset > 0 ? (size_t)info.frame_offset
+                                             : (size_t)info.frame_bytes;
+    if (consumed == 0 || consumed > s_mp3_in_len) {
+      break;
+    }
+    memmove(s_mp3_in, s_mp3_in + consumed, s_mp3_in_len - consumed);
+    s_mp3_in_len -= consumed;
+    if (s_mp3_in_len < 2048) {
+      break; /* refill from HTTP before more decoding */
+    }
+  }
+  return fed;
 }
 
 static void stream_task(void *arg) {
@@ -315,8 +416,8 @@ static void stream_task(void *arg) {
                fmt == FMT_WAV ? "WAV" : fmt == FMT_MP3 ? "MP3"
                : fmt == FMT_AAC ? "AAC" : fmt == FMT_FLAC ? "FLAC"
                                                           : "UNKNOWN");
-      if (fmt != FMT_WAV) {
-        ESP_LOGE(TAG, "format not supported yet (M2 stage 1 = WAV only)");
+      if (fmt != FMT_WAV && fmt != FMT_MP3) {
+        ESP_LOGE(TAG, "format not supported yet (M2 stage 2 = WAV + MP3)");
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         client = NULL;
@@ -324,15 +425,27 @@ static void stream_task(void *arg) {
         continue;
       }
 
-      /* First chunk into the WAV parser. */
-      size_t frames = 0;
-      int r = wav_consume(&wav, sniff, (size_t)got, s_pcm_buf,
-                          PCM_CHUNK_FRAMES * 2, &frames);
-      if (r > 0 && frames > 0) {
-        s_rate = wav.rate;
-        s_channels = wav.channels;
-        s_bits = wav.bits;
-        feed_pcm(s_pcm_buf, frames);
+      if (fmt == FMT_MP3) {
+        mp3dec_init(&s_mp3_dec);
+        s_mp3_in_len = 0;
+        mp3_feed(sniff, (size_t)got);
+      } else {
+        /* First chunk into the WAV parser. */
+        size_t frames = 0;
+        int r = wav_consume(&wav, sniff, (size_t)got, s_pcm_buf,
+                            PCM_CHUNK_FRAMES * 2, &frames);
+        if (r > 0 && frames > 0) {
+          s_rate = wav.rate;
+          s_channels = wav.channels;
+          s_bits = wav.bits;
+          feed_pcm(s_pcm_buf, frames);
+          if (wav.data_total > 0) {
+            double bps = (double)s_rate * s_channels * (double)(s_bits / 8);
+            if (bps > 0) {
+              s_duration = (double)wav.data_total / bps;
+            }
+          }
+        }
       }
       s_active = true;
       in_stream = true;
@@ -388,15 +501,19 @@ static void stream_task(void *arg) {
         ESP_LOGI(TAG, "stream ended (read=%d)", n);
         break;
       }
-      size_t frames = 0;
-      int r = wav_consume(&wav, buf, (size_t)n, s_pcm_buf,
-                          PCM_CHUNK_FRAMES * 2, &frames);
-      if (r < 0) {
-        ESP_LOGE(TAG, "WAV parse error");
-        break;
-      }
-      if (r > 0 && frames > 0) {
-        feed_pcm(s_pcm_buf, frames);
+      if (fmt == FMT_WAV) {
+        size_t frames = 0;
+        int r = wav_consume(&wav, buf, (size_t)n, s_pcm_buf,
+                            PCM_CHUNK_FRAMES * 2, &frames);
+        if (r < 0) {
+          ESP_LOGE(TAG, "WAV parse error");
+          break;
+        }
+        if (r > 0 && frames > 0) {
+          feed_pcm(s_pcm_buf, frames);
+        }
+      } else if (fmt == FMT_MP3) {
+        mp3_feed(buf, (size_t)n);
       }
     }
 
