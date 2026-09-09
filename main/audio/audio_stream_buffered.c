@@ -1,0 +1,334 @@
+#include <errno.h>
+#include <netinet/in.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include "audio_receiver_internal.h"
+
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+
+#include "audio_crypto.h"
+#include "network/socket_utils.h"
+
+#define BUFFERED_AUDIO_PACKET_SIZE 8192
+#define AUDIO_BUFFERED_STACK_SIZE  4096
+// Bounded hand-off to the decode worker.  Long enough to ride out a decode
+// hiccup, short enough that a wedged decoder cannot block stream teardown.
+#define BUFFERED_ENQUEUE_TIMEOUT_MS 200U
+// The lwIP core; core 1 is reserved for decode and I2S playback.
+#define AUDIO_BUFFERED_TASK_CORE 0
+
+static const char *TAG = "audio_buf";
+
+// Read exact number of bytes, but keep waiting on timeout if paused
+// Returns: positive = bytes read, 0 = connection closed, -1 = error
+static ssize_t read_exact(audio_stream_t *stream, audio_receiver_state_t *state,
+                          int sock, uint8_t *buf, size_t len) {
+  size_t total = 0;
+  while (total < len && stream->running) {
+    ssize_t n = recv(sock, buf + total, len - total, 0);
+    if (n > 0) {
+      total += (size_t)n;
+    } else if (n == 0) {
+      // Connection closed by peer
+      ESP_LOGI(TAG, "Buffered audio connection closed by peer");
+      return 0;
+    } else {
+      // n < 0: error or timeout
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        // Timeout - if we're paused, keep waiting for resume
+        if (!state->timing.playing) {
+          // Still paused, keep the connection alive
+          vTaskDelay(pdMS_TO_TICKS(100));
+          continue;
+        }
+        // Playing but timed out - connection may be dead
+        ESP_LOGW(TAG, "Buffered audio timeout while playing");
+        return -1;
+      }
+      ESP_LOGE(TAG, "Buffered audio recv error: %d", errno);
+      return -1;
+    }
+  }
+  return stream->running ? (ssize_t)total : -1;
+}
+
+static void buffered_audio_task(void *pvParameters) {
+  audio_stream_t *stream = (audio_stream_t *)pvParameters;
+  audio_receiver_state_t *state = audio_stream_state(stream);
+
+  while (stream->running) {
+    struct sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+
+    int client_sock = accept(state->buffered_listen_socket,
+                             (struct sockaddr *)&client_addr, &addr_len);
+    if (client_sock < 0) {
+      if (errno != EAGAIN && errno != EWOULDBLOCK && stream->running) {
+        ESP_LOGE(TAG, "Buffered audio accept error: %d", errno);
+      }
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+
+    state->buffered_client_socket = client_sock;
+
+    struct timeval tv = {.tv_sec = 30, .tv_usec = 0};
+    setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    // Socket receive buffer: match lwIP's TCP receive window so the kernel
+    // buffer can hold exactly what the TCP window allows in flight.  A larger
+    // SO_RCVBUF (e.g. the old 65536) accumulates stale audio data that must
+    // drain through the RTP gates on every track skip, adding transition
+    // latency.  Keeping it at TCP_WND ties both knobs to a single sdkconfig
+    // value (CONFIG_LWIP_TCP_WND_DEFAULT).
+    int rcvbuf = CONFIG_LWIP_TCP_WND_DEFAULT;
+    setsockopt(client_sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+
+    uint8_t *packet = state->buffered_recv_buffer;
+    if (!packet) {
+      packet = heap_caps_malloc(BUFFERED_AUDIO_PACKET_SIZE,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (!packet) {
+        packet = malloc(BUFFERED_AUDIO_PACKET_SIZE);
+      }
+      if (!packet) {
+        ESP_LOGE(TAG, "Failed to allocate buffered audio packet buffer");
+        close(client_sock);
+        state->buffered_client_socket = -1;
+        continue;
+      }
+      state->buffered_recv_buffer = packet;
+    }
+
+    while (stream->running) {
+      // Back-pressure: if the pipeline is nearly full, pause reading to let
+      // TCP flow control slow down the sender. This prevents overflow and
+      // keeps frames in order.
+      while (stream->running &&
+             (audio_decode_worker_is_nearly_full(state->decode_worker) ||
+              audio_engine_v2_is_nearly_full(&state->engine_v2))) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+      }
+
+      uint8_t len_buf[2];
+      if (read_exact(stream, state, client_sock, len_buf, 2) != 2) {
+        break;
+      }
+
+      uint16_t data_len = (uint16_t)((len_buf[0] << 8) | len_buf[1]);
+      if (data_len < 2 || data_len > BUFFERED_AUDIO_PACKET_SIZE) {
+        ESP_LOGW(TAG, "Invalid buffered audio packet length: %u", data_len);
+        break;
+      }
+
+      size_t packet_len = data_len - 2;
+      if (read_exact(stream, state, client_sock, packet, packet_len) !=
+          (ssize_t)packet_len) {
+        break;
+      }
+
+      state->stats.packets_received++;
+
+      uint32_t seq_no = (packet[1] << 16) | (packet[2] << 8) | packet[3];
+      uint32_t timestamp =
+          (packet[4] << 24) | (packet[5] << 16) | (packet[6] << 8) | packet[7];
+
+      // Snapshot the epoch before the gate so a seek that lands between the
+      // gate and the decode invalidates this packet rather than letting it
+      // reach the timeline of the new segment.
+      const uint32_t epoch = audio_epoch_get(&state->engine_v2.epoch);
+      (void)__atomic_add_fetch(&state->engine_v2.diag_rx_packets, 1U,
+                               __ATOMIC_RELAXED);
+
+      // Drop stale pre-seek/old-track packets before AES and AAC work.  The
+      // bytes still have to be drained from TCP (done above), but they no
+      // longer consume decoder time or enter the PCM ring buffer.
+      if (!audio_stream_accept_timestamp(state, timestamp)) {
+        state->stats.packets_dropped++;
+        (void)__atomic_add_fetch(&state->engine_v2.diag_gate_drops, 1U,
+                                 __ATOMIC_RELAXED);
+        continue;
+      }
+
+      uint8_t *decrypted = state->decrypt_buffer;
+      size_t decrypt_capacity = state->decrypt_buffer_size;
+      if (!decrypted) {
+        decrypted = packet + 12;
+        decrypt_capacity = packet_len > 12 ? packet_len - 12 : 0;
+      }
+
+      int decrypted_len = audio_crypto_decrypt_buffered(
+          &stream->encrypt, packet, packet_len, decrypted, decrypt_capacity);
+      if (decrypted_len < 0) {
+        state->stats.decrypt_errors++;
+        state->stats.packets_dropped++;
+        continue;
+      }
+
+      state->stats.last_seq = (uint16_t)(seq_no & 0xFFFF);
+      state->stats.last_timestamp = timestamp;
+
+      state->blocks_read++;
+      state->blocks_read_in_sequence++;
+
+      // Hand the access unit to the decode worker.  Decoding on this task
+      // would stall the TCP reader for the duration of every AAC frame, which
+      // is what previously turned a transient decode hiccup into dropped
+      // packets and a visible gap.
+      const audio_encoded_packet_t encoded = {
+          .epoch = epoch,
+          .rtp_timestamp = timestamp,
+          .payload = decrypted,
+          .payload_len = (size_t)decrypted_len,
+          .prime_mute = audio_stream_aac_prime_mute_wanted(state),
+      };
+
+      const audio_decode_enqueue_result_t enq = audio_decode_worker_enqueue(
+          state->decode_worker, &encoded, BUFFERED_ENQUEUE_TIMEOUT_MS);
+      if (enq == AUDIO_DECODE_ENQUEUE_OK) {
+        (void)__atomic_add_fetch(&state->engine_v2.diag_enqueue_ok, 1U,
+                                 __ATOMIC_RELAXED);
+      } else {
+        state->stats.packets_dropped++;
+        (void)__atomic_add_fetch(enq == AUDIO_DECODE_ENQUEUE_RETRY
+                                     ? &state->engine_v2.diag_enqueue_retries
+                                     : &state->engine_v2.diag_queue_drops,
+                                 1U, __ATOMIC_RELAXED);
+      }
+    }
+
+    close(client_sock);
+    state->buffered_client_socket = -1;
+  }
+
+  state->buffered_task_handle = NULL;
+  vTaskDelete(NULL);
+}
+
+static bool buffered_wait_for_task_stopped(audio_receiver_state_t *state,
+                                           int timeout_ticks) {
+  while (state->buffered_task_handle && timeout_ticks-- > 0) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  return state->buffered_task_handle == NULL;
+}
+
+static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
+  audio_receiver_state_t *state = audio_stream_state(stream);
+  if (stream->running) {
+    ESP_LOGI(TAG, "Buffered audio already running, continuing");
+    return ESP_OK;
+  }
+  if (state->buffered_task_handle) {
+    ESP_LOGW(TAG, "Buffered audio task still stopping, waiting");
+    if (!buffered_wait_for_task_stopped(state, 20)) {
+      ESP_LOGW(TAG, "Buffered audio task still active");
+      return ESP_ERR_INVALID_STATE;
+    }
+  }
+
+  uint16_t bound_port = port;
+  state->buffered_listen_socket =
+      socket_utils_bind_tcp_listener(port, 1, true, &bound_port);
+  if (state->buffered_listen_socket < 0) {
+    return ESP_FAIL;
+  }
+  state->buffered_port = bound_port;
+
+  stream->running = true;
+
+  state->buffered_task_handle = NULL;
+  // Kept on the lwIP core so it does not migrate onto core 1 and compete with
+  // the decoder and the I2S playback task.
+  BaseType_t task_ret = xTaskCreatePinnedToCore(
+      buffered_audio_task, "buff_audio", AUDIO_BUFFERED_STACK_SIZE, stream, 5,
+      &state->buffered_task_handle, AUDIO_BUFFERED_TASK_CORE);
+  if (task_ret != pdPASS || !state->buffered_task_handle) {
+    ESP_LOGE(TAG, "Failed to create buffered audio task");
+    close(state->buffered_listen_socket);
+    state->buffered_listen_socket = -1;
+    stream->running = false;
+    return ESP_FAIL;
+  }
+
+  // Worst-case memory snapshot: buffered streaming is the heaviest concurrent
+  // load (WiFi + lwip + decoder + PCM ring, plus BT controller resident on
+  // squeezeamp-bt).  Use this to size WiFi/TCP buffers without risking OOM.
+  ESP_LOGI(TAG,
+           "Buffered start: free heap %lu DRAM (largest block %lu), "
+           "%lu SPIRAM",
+           (unsigned long)heap_caps_get_free_size(AUDIO_DRAM_CAPS),
+           (unsigned long)heap_caps_get_largest_free_block(AUDIO_DRAM_CAPS),
+           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+  return ESP_OK;
+}
+
+static void buffered_stop(audio_stream_t *stream) {
+  audio_receiver_state_t *state = audio_stream_state(stream);
+  if (!stream->running && !state->buffered_task_handle) {
+    return;
+  }
+
+  stream->running = false;
+
+  if (state->buffered_client_socket > 0) {
+    close(state->buffered_client_socket);
+    state->buffered_client_socket = -1;
+  }
+
+  if (state->buffered_listen_socket > 0) {
+    close(state->buffered_listen_socket);
+    state->buffered_listen_socket = -1;
+  }
+
+  if (!buffered_wait_for_task_stopped(state, 20)) {
+    ESP_LOGW(TAG, "Buffered audio task did not exit within timeout");
+    return;
+  }
+
+  if (state->buffered_recv_buffer) {
+    heap_caps_free(state->buffered_recv_buffer);
+    state->buffered_recv_buffer = NULL;
+  }
+
+  state->buffered_port = 0;
+}
+
+static uint16_t buffered_get_port(audio_stream_t *stream) {
+  audio_receiver_state_t *state = audio_stream_state(stream);
+  return state->buffered_port;
+}
+
+static bool buffered_is_running(audio_stream_t *stream) {
+  return stream->running;
+}
+
+static void buffered_destroy(audio_stream_t *stream) {
+  if (!stream) {
+    return;
+  }
+
+  buffered_stop(stream);
+  audio_receiver_state_t *state = audio_stream_state(stream);
+  if (state->buffered_task_handle) {
+    ESP_LOGW(TAG, "Leaking buffered stream because task shutdown timed out");
+    return;
+  }
+  free(stream);
+}
+
+const audio_stream_ops_t audio_stream_buffered_ops = {
+    .start = buffered_start,
+    .stop = buffered_stop,
+    .receive_packet = NULL,
+    .decrypt_payload = NULL,
+    .get_port = buffered_get_port,
+    .is_running = buffered_is_running,
+    .destroy = buffered_destroy};

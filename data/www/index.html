@@ -1,0 +1,579 @@
+<!DOCTYPE html><html><head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>ESP32-AirPlay2</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(160deg,#0a0c0f 0%,#11141a 55%,#0d1014 100%);min-height:100vh;padding:20px;color:#e8eaed}
+.wrap{max-width:480px;margin:0 auto}
+.header{text-align:center;padding:30px 0 10px}
+.header h1{font-size:28px;font-weight:600;margin-bottom:8px;color:#f2f4f7}
+.header p{color:#98a2b3;font-size:14px}
+.lang-switch{display:flex;justify-content:center;gap:8px;margin:14px 0 4px}
+.lang-switch button{padding:6px 16px;border-radius:8px;border:1px solid #2b323d;background:#0e1116;color:#98a2b3;font-size:13px;cursor:pointer}
+.lang-switch button.on{background:#5b8cff;color:#fff;border-color:#5b8cff}
+.status-bar{background:#1a2230;border:1px solid #26303f;border-radius:12px;padding:16px;margin-bottom:20px;text-align:center}
+.status-bar.ok{background:#12331f;border-color:#2f7a4f}
+.status-bar.err{background:#3a1618;border-color:#8c3a3d}
+.card{background:#161a21;border:1px solid #262c36;border-radius:14px;padding:20px;margin-bottom:16px}
+.card h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#8ab4f8}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;font-size:12px;color:#98a2b3;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
+input[type=text],input[type=password],select{width:100%;padding:12px 14px;background:#0e1116;border:1px solid #2b323d;border-radius:8px;color:#e8eaed;font-size:14px}
+input:focus,select:focus{outline:none;border-color:#5b8cff}
+.btn{display:inline-block;padding:12px 20px;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;transition:all 0.2s}
+.btn-primary{background:#5b8cff;color:#fff}
+.btn-primary:hover{background:#4a79f0}
+.btn-secondary{background:rgba(255,255,255,0.08);color:#e8eaed;border:1px solid rgba(255,255,255,0.12)}
+.btn-secondary:hover{background:rgba(255,255,255,0.14)}
+.btn-danger{background:#d64545;color:#fff}
+.btn-danger:hover{background:#c23a3a}
+.btn-block{width:100%;margin-top:10px}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+a.btn{text-decoration:none;text-align:center}
+.wifi-list{max-height:180px;overflow-y:auto;margin:12px 0;border-radius:8px}
+.wifi-item{padding:12px;background:#0e1116;margin-bottom:4px;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+.wifi-item:hover{background:rgba(91,140,255,0.15)}
+.wifi-item.sel{background:rgba(91,140,255,0.22);border:1px solid #5b8cff}
+.wifi-item .ssid{font-weight:500}
+.wifi-item .rssi{font-size:12px;color:#98a2b3}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.info-item{background:#0e1116;padding:12px;border-radius:8px}
+.info-item label{font-size:11px;color:#98a2b3;display:block;margin-bottom:4px}
+.info-item span{font-size:14px;font-weight:500}
+.msg{padding:10px;border-radius:6px;margin-top:10px;font-size:13px}
+.msg.ok{background:rgba(47,122,79,0.35);color:#a9e3c2}
+.msg.err{background:rgba(140,58,61,0.4);color:#f2b8ba}
+.msg.info{background:rgba(42,74,120,0.4);color:#b9d6f5}
+.file-row{display:flex;gap:10px;align-items:center}
+.file-name{flex:1;font-size:13px;color:#98a2b3}
+.actions{display:flex;gap:10px;margin-top:10px}
+.slider-row{display:flex;align-items:center;gap:12px}
+.slider-row input[type=range]{flex:1;accent-color:#5b8cff}
+.slider-row span{font-size:13px;color:#98a2b3;min-width:42px;text-align:right}
+.hint{font-size:12px;color:#98a2b3;opacity:0.75;margin-top:10px;margin-bottom:6px;line-height:1.5}
+</style></head><body>
+<div class='wrap'>
+<div class='header'><h1>ESP32-AirPlay2</h1><p data-i18n='subtitle'>AirPlay 2 接收器 · ESP32-S3 → USB 声卡</p>
+<div class='lang-switch'>
+<button id='lang-zh' onclick='setLang(0)'>中文</button>
+<button id='lang-en' onclick='setLang(1)'>EN</button>
+</div></div>
+<div id='status-bar' class='status-bar' data-i18n='loading'>正在加载…</div>
+
+<div class='card'><h2 data-i18n='wifi_title'>WiFi 网络</h2>
+<button class='btn btn-secondary' onclick='scanWiFi()' data-i18n='wifi_scan'>扫描网络</button>
+<div id='wifi-list' class='wifi-list'></div>
+<div class='form-group'><label data-i18n='wifi_ssid'>网络名称 (SSID)</label><input type='text' id='wifi-ssid' data-i18n-ph='wifi_ssid_ph' placeholder='请输入或选择网络'></div>
+<div class='form-group'><label data-i18n='wifi_pass'>密码</label><input type='password' id='wifi-pass' data-i18n-ph='wifi_pass_ph' placeholder='请输入密码'></div>
+<button class='btn btn-primary btn-block' onclick='saveWiFi()' data-i18n='wifi_connect'>连接 WiFi</button>
+<div id='wifi-msg'></div></div>
+
+<div class='card'><h2><span data-i18n='usb_title'>音频编码状态</span> <span style='font-size:11px;color:#888;font-weight:400' data-i18n='usb_sub'>USB 声卡编码信息</span></h2>
+<div id='usb-status-bar' class='msg info' style='margin-top:0' data-i18n='usb_none'>未检测到 USB 声卡，请插入 USB 端口。</div>
+<div id='usb-grid' class='info-grid' style='display:none;margin-top:12px'>
+<div class='info-item'><label data-i18n='usb_dev'>设备</label><span id='usb-product'>-</span></div>
+<div class='info-item'><label data-i18n='usb_uac'>USB 音频类</label><span id='usb-uac'>-</span></div>
+<div class='info-item'><label data-i18n='usb_rate'>采样率</label><span id='usb-rate'>-</span></div>
+<div class='info-item'><label data-i18n='usb_bits'>位深</label><span id='usb-bits'>-</span></div>
+<div class='info-item'><label data-i18n='usb_ch'>声道</label><span id='usb-ch'>-</span></div>
+<div class='info-item'><label data-i18n='usb_state'>流状态</label><span id='usb-state'>-</span></div>
+<div class='info-item'><label data-i18n='usb_uptime'>运行时长</label><span id='usb-uptime'>-</span></div>
+<div class='info-item'><label data-i18n='usb_peak'>输出电平 (峰值)</label><span id='usb-peak'>-</span></div>
+<div class='info-item'><label data-i18n='usb_ap_vol'>AirPlay 音量</label><span id='usb-ap-vol'>-</span></div>
+<div class='info-item'><label data-i18n='usb_dev_vol'>设备音量</label><span id='usb-dev-vol'>-</span></div>
+<div class='info-item'><label data-i18n='usb_preroll'>预滚缓冲</label><span id='usb-preroll'>-</span></div>
+</div></div>
+
+<div class='card'><h2 data-i18n='vol_title'>音量控制</h2>
+<div class='slider-row'><input type='range' id='volume-slider' min='0' max='100' value='50'
+ oninput='document.getElementById("vol-pct").textContent=this.value+"%"' onchange='saveVolume()'>
+<span id='vol-pct'>50%</span></div>
+<div class='hint' style='margin-top:8px' data-i18n='vol_hint'>设备音量：数字增益（100% = 满幅直通，与电脑音量 100% 同级别；向下为衰减，不削波），与手机音量相互独立、互不联动；遥控器按键调节会同步显示到此处</div>
+<div id='volume-msg'></div></div>
+
+<div class='card'><h2 data-i18n='audio_out_title'>音频输出</h2>
+<div class='form-group'><label for='audio-fmt' data-i18n='audio_fmt'>输出格式</label>
+<select id='audio-fmt' onchange='saveFormat()'></select></div>
+<div class='hint' id='fmt-hint'></div>
+<div class='hint' data-i18n='fmt_note'>切换格式后需重启开发板生效；不支持的组合会自动回退到声卡实际支持的最近格式。</div>
+<div id='fmt-msg'></div>
+<div class='form-group' style='margin-top:18px'><label for='latency-mode' data-i18n='latency_title'>延时模式</label>
+<select id='latency-mode' onchange='saveLatency()'>
+<option value='0' data-i18n='latency_normal'>普通（180ms 预滚 · 稳定优先）</option>
+<option value='1' data-i18n='latency_low'>低延时（60ms · 更跟手）</option>
+<option value='2' data-i18n='latency_ultra'>极速（20ms · 声画同步优先）</option>
+</select></div>
+<div class='hint' data-i18n='latency_hint'>预滚 = 起播前接收器缓冲的音频量，决定切歌后的出声速度和声画同步度。数值越低越跟手，但 WiFi 波动时更容易卡顿/爆音。下次 AirPlay 会话开始生效。</div>
+<div id='latency-msg'></div></div>
+
+<div class='card'><h2 data-i18n='dev_title'>设备设置</h2>
+<div class='form-group'><label data-i18n='dev_name'>AirPlay 设备名称</label><input type='text' id='dev-name' data-i18n-ph='dev_name_ph' placeholder='我的音箱'></div>
+<button class='btn btn-primary' onclick='saveName()' data-i18n='save_name'>保存名称</button>
+<div id='name-msg'></div>
+<div class='form-group' style='margin-top:18px'><label for='airplay-mode' data-i18n='ap_mode'>AirPlay 模式</label>
+<select id='airplay-mode' onchange='saveAirplayMode()'>
+<option value='0' data-i18n='ap_v2'>多房间 (v2)</option>
+<option value='1' data-i18n='ap_v1'>兼容旧版 (v1)</option>
+</select></div>
+<div class='hint' data-i18n='ap_hint'>部分软件仅支持 AirPlay v1。苹果设备仍可在此模式下工作，但没有 v2 特性（如多音箱同步）。音量 / 切歌硬件按键需要 v1 模式。</div>
+<div id='airplay-msg'></div>
+<div id='remote-group' style='margin-top:18px'>
+<div class='form-group'><label for='remote-layout' data-i18n='rem_title'>遥控布局</label>
+<select id='remote-layout' onchange='saveRemoteLayout()'>
+<option value='0' data-i18n='rem_apple'>苹果标准（默认）</option>
+<option value='1' data-i18n='rem_kef'>KEF EGG</option>
+</select></div>
+<div class='hint' data-i18n='rem_hint'>苹果标准：byte[1] 播放=0x01 / 音量+=0x02 / 音量-=0x04。KEF EGG：音量+=0x01 / 音量-=0x02，byte[2] 播放/上下首。两布局比特位互斥，选错会键位错乱。改动立即生效。</div>
+<div id='remote-layout-msg'></div></div>
+<div class='form-group' style='margin-top:18px'><label for='led-brightness' data-i18n='led_title'>LED 亮度</label>
+<div class='slider-row'><input type='range' id='led-brightness' min='0' max='255' value='128' oninput='document.getElementById("led-pct").textContent=Math.round(this.value/255*100)+"%"'>
+<span id='led-pct'>50%</span></div></div>
+<button class='btn btn-secondary' onclick='saveBrightness()' data-i18n='save_brightness'>保存亮度</button>
+<div id='brightness-msg'></div>
+<div id='chan-group'>
+<div class='form-group' style='margin-top:18px'><label for='chan-mode' id='chan-label' data-i18n='chan_title'>输出声道</label>
+<select id='chan-mode' onchange='saveChannel()'>
+<option value='0' data-i18n='chan_stereo'>立体声</option>
+<option value='1' data-i18n='chan_l'>仅左声道</option>
+<option value='2' data-i18n='chan_r'>仅右声道</option>
+<option value='3' data-i18n='chan_mono'>单声道 (L+R)</option>
+</select></div>
+<div id='chan-msg'></div></div>
+<div id='dual-group' style='display:none;margin-top:18px'>
+<div class='form-group'><label for='dual-mode' data-i18n='dual_title'>第二功放</label>
+<select id='dual-mode' onchange='saveDual()'>
+<option value='1' data-i18n='dual_pbtl'>桥接单声道 (PBTL)</option>
+<option value='0' data-i18n='dual_btl'>立体声 (BTL)</option>
+</select></div>
+<div id='dual-msg'></div></div>
+<div id='eq-link' style='display:none;margin-top:18px'>
+<a href='/bq' class='btn btn-secondary' data-i18n='eq_link'>参数均衡器 (Biquad EQ)</a></div>
+<div id='hf1-link' style='display:none;margin-top:18px'>
+<a href='/hf' class='btn btn-secondary' data-i18n='hf_link'>HybridFlow 调音</a></div>
+</div>
+
+<div class='card'><h2 data-i18n='ota_title'>固件升级</h2>
+<div class='file-row'><input type='file' id='fw-file' accept='.bin' style='display:none'>
+<button class='btn btn-secondary' onclick='document.getElementById("fw-file").click()' data-i18n='ota_pick'>选择文件</button>
+<span class='file-name' id='fw-name' data-i18n='ota_none'>未选择文件</span></div>
+<button class='btn btn-primary btn-block' id='ota-btn' onclick='startOTA()' disabled data-i18n='ota_up'>上传固件</button>
+<div id='ota-msg'></div></div>
+
+<div class='card'><h2 data-i18n='sys_title'>系统信息</h2>
+<div class='info-grid'>
+<div class='info-item'><label data-i18n='sys_ip'>IP 地址</label><span id='info-ip'>-</span></div>
+<div class='info-item'><label data-i18n='sys_mac'>MAC 地址</label><span id='info-mac'>-</span></div>
+<div class='info-item'><label data-i18n='sys_name'>设备名称</label><span id='info-name'>-</span></div>
+<div class='info-item'><label data-i18n='sys_heap'>空闲内存</label><span id='info-heap'>-</span></div>
+<div class='info-item'><label data-i18n='sys_fw'>固件版本</label><span id='info-fw'>-</span></div>
+<div class='info-item'><label data-i18n='sys_uptime'>运行时间</label><span id='info-uptime'>-</span></div>
+<div class='info-item'><label data-i18n='sys_reset'>上次重启原因</label><span id='info-reset'>-</span></div>
+<div class='info-item'><label data-i18n='sys_ssid'>WiFi 名称</label><span id='info-ssid'>-</span></div>
+<div class='info-item'><label data-i18n='sys_rssi'>WiFi 信号</label><span id='info-rssi'>-</span></div>
+<div class='info-item'><label data-i18n='sys_chan'>WiFi 信道</label><span id='info-chan'>-</span></div>
+<div class='info-item'><label data-i18n='sys_phy'>WiFi 制式</label><span id='info-phy'>-</span></div>
+<div class='info-item' style='grid-column:1/-1'><label data-i18n='sys_bssid'>WiFi BSSID</label><span id='info-bssid'>-</span></div>
+</div>
+<div class='actions'><button class='btn btn-danger' onclick='restart()' data-i18n='sys_restart'>重启设备</button></div>
+</div>
+
+<div class='card'><h2 data-i18n='log_title'>系统日志</h2>
+<p style='color:#888;font-size:13px;margin-bottom:12px' data-i18n='log_desc'>通过 WebSocket 实时查看 ESP 日志</p>
+<a href='/logs' class='btn btn-primary' data-i18n='log_open'>打开日志查看器</a></div>
+
+<div class='card'><h2 data-i18n='spd_title'>WiFi 测速</h2>
+<p style='color:#888;font-size:13px;margin-bottom:12px' data-i18n='spd_desc'>测量到本设备的网络延迟和吞吐量</p>
+<a href='/speedtest' class='btn btn-primary' data-i18n='spd_open'>打开测速页面</a></div>
+</div>
+
+<script>
+/* ── i18n ─────────────────────────────────────────────────────────────── */
+var LANG=0; /* 0=中文 1=English */
+var I18N={
+zh:{
+ subtitle:'AirPlay 2 接收器 · ESP32-S3 → USB 声卡', loading:'正在加载…',
+ wifi_title:'WiFi 网络', wifi_scan:'扫描网络', wifi_ssid:'网络名称 (SSID)', wifi_ssid_ph:'请输入或选择网络',
+ wifi_pass:'密码', wifi_pass_ph:'请输入密码', wifi_connect:'连接 WiFi',
+ scanning:'正在扫描…', no_net:'未找到网络', scan_fail:'扫描失败', need_ssid:'请输入网络名称',
+ saved_reboot:'已保存！正在重启…', err:'出错', wifi_saved:'已保存！',
+ usb_title:'音频编码状态', usb_sub:'USB 声卡编码信息', usb_none:'未检测到 USB 声卡，请插入 USB 端口。',
+ usb_dev:'设备', usb_uac:'USB 音频类', usb_rate:'采样率', usb_bits:'位深', usb_ch:'声道',
+ usb_state:'流状态', usb_uptime:'运行时长', usb_peak:'输出电平 (峰值)', usb_ap_vol:'AirPlay 音量',
+ usb_dev_vol:'设备音量', usb_preroll:'预滚缓冲', playing:'播放中', idle:'空闲',
+ no_audio:'无音频', unnamed:'(未命名设备)', stg_none:'无', usb_stage:'配置阶段',
+ usb_stage_err:'（错误码 {e}）——设备枚举未完成', usb_unavail:'USB 状态不可用',
+ vol_title:'音量控制', vol_hint:'设备音量：数字增益（100% = 满幅直通，与电脑音量 100% 同级别；向下为衰减，不削波），与手机音量相互独立、互不联动；遥控器按键调节会同步显示到此处',
+ vol_applied:'设备音量已应用（{db} dB）', vol_fail:'保存失败', vol_save_err:'出错：{e}',
+ audio_out_title:'音频输出', audio_fmt:'输出格式', fmt_apply:'重新应用格式',
+ fmt_note:'切换格式后需重启开发板生效；不支持的组合会自动回退到声卡实际支持的最近格式。',
+ fmt_saved:'格式已保存，重启后生效。', fmt_reprobed:'已重新枚举声卡，格式已应用。',
+ fmt_no_card:'未检测到声卡，无需重新应用（已保存，插卡时生效）。', fmt_err:'格式保存失败',
+ latency_title:'延时模式', latency_normal:'普通（180ms 预滚 · 稳定优先）',
+ latency_low:'低延时（60ms · 更跟手）', latency_ultra:'极速（20ms · 声画同步优先）',
+ latency_hint:'预滚 = 起播前接收器缓冲的音频量，决定切歌后的出声速度和声画同步度。数值越低越跟手，但 WiFi 波动时更容易卡顿/爆音。下次 AirPlay 会话开始生效。',
+ latency_saved:'延时模式已保存，下次播放生效。', latency_err:'延时模式保存失败',
+ dev_title:'设备设置', dev_name:'AirPlay 设备名称', dev_name_ph:'我的音箱', save_name:'保存名称',
+ name_empty:'请输入名称', name_saved:'已保存！请重启生效。',
+ ap_mode:'AirPlay 模式', ap_v2:'多房间 (v2)', ap_v1:'兼容旧版 (v1)',
+ ap_hint:'部分软件仅支持 AirPlay v1。苹果设备仍可在此模式下工作，但没有 v2 特性（如多音箱同步）。音量 / 切歌硬件按键需要 v1 模式。',
+ ap_saved:'已保存！请重启生效。', ap_saved_now:'已保存！', ap_err:'保存失败',
+ rem_title:'遥控布局', rem_apple:'苹果标准（默认）', rem_kef:'KEF EGG',
+ rem_hint:'苹果标准：byte[1] 播放=0x01 / 音量+=0x02 / 音量-=0x04。KEF EGG：音量+=0x01 / 音量-=0x02，byte[2] 播放/上下首。两布局比特位互斥，选错会键位错乱。改动立即生效。',
+ rem_saved:'已保存，立即生效。', rem_err:'保存失败',
+ led_title:'LED 亮度', save_brightness:'保存亮度', led_saved:'已保存！',
+ chan_title:'输出声道', chan_stereo:'立体声', chan_l:'仅左声道', chan_r:'仅右声道', chan_mono:'单声道 (L+R)',
+ chan_in:'输入声道', chan_dual:'双声道 (L+R)/2',
+ dual_title:'第二功放', dual_pbtl:'桥接单声道 (PBTL)', dual_btl:'立体声 (BTL)',
+ dual_warn1:'将第二功放桥接为单声道？\n\n它将被重新配置为 PBTL 单声道：其 OUT_A 和 OUT_B 端子必须桥接在一起并连接到单个扬声器。\n\n重启前请先重新接线。',
+ dual_warn0:'取消第二功放的桥接？\n\n它将作为立体声 BTL 对运行，驱动两个独立扬声器。\n\n如果 OUT_A 和 OUT_B 仍为 PBTL 桥接状态，必须先拆开——保持短接会令两路输出互相驱动，可能损坏功放及其输出滤波器。',
+ dual_saved:'已保存！请重新接线，然后重启以生效。',
+ eq_link:'参数均衡器 (Biquad EQ)', hf_link:'HybridFlow 调音',
+ ota_title:'固件升级', ota_pick:'选择文件', ota_none:'未选择文件', ota_up:'上传固件',
+ ota_need:'请选择文件', ota_uploading:'正在上传…', ota_done:'完成！正在重启…',
+ sys_title:'系统信息', sys_ip:'IP 地址', sys_mac:'MAC 地址', sys_name:'设备名称', sys_heap:'空闲内存',
+ sys_fw:'固件版本', sys_uptime:'运行时间', sys_reset:'上次重启原因', sys_ssid:'WiFi 名称',
+ sys_rssi:'WiFi 信号', sys_chan:'WiFi 信道', sys_phy:'WiFi 制式', sys_bssid:'WiFi BSSID',
+ sys_restart:'重启设备', restart_ask:'确定要重启设备吗？', restarting:'正在重启…',
+ eth:'以太网：{ip}', wifi:'WiFi：{ip}', no_net:'未连接网络 — 请在下方配置 WiFi',
+ d:'天 ', h:'小时 ', m:'分 ', s:'秒', rssi_ex:' (优秀)', rssi_good:' (良好)', rssi_ok:' (一般)', rssi_weak:' (较弱)',
+ log_title:'系统日志', log_desc:'通过 WebSocket 实时查看 ESP 日志', log_open:'打开日志查看器',
+ spd_title:'WiFi 测速', spd_desc:'测量到本设备的网络延迟和吞吐量', spd_open:'打开测速页面',
+ fmtq0:'CD 音质', fmtq1:'DVD 音质', fmtq2:'Hi-Res 入门', fmtq3:'Hi-Res 标准（录音室音质，默认）',
+ fmtq4:'Hi-Res 高解析（实验性）', fmtq5:'实验性（不推荐）',
+ fmt_hint_t:'当前选择：{q}。Windows 同规格下声音最大（48kHz/24bit）。44.1kHz 在部分声卡上音量偏小。'
+},
+en:{
+ subtitle:'AirPlay 2 receiver · ESP32-S3 → USB sound card', loading:'Loading…',
+ wifi_title:'WiFi Network', wifi_scan:'Scan networks', wifi_ssid:'Network name (SSID)', wifi_ssid_ph:'Enter or pick a network',
+ wifi_pass:'Password', wifi_pass_ph:'Enter password', wifi_connect:'Connect WiFi',
+ scanning:'Scanning…', no_net:'No networks found', scan_fail:'Scan failed', need_ssid:'Enter a network name',
+ saved_reboot:'Saved! Rebooting…', err:'Error', wifi_saved:'Saved!',
+ usb_title:'Audio Encoding Status', usb_sub:'USB sound card encoding', usb_none:'No USB sound card detected. Plug one into the USB port.',
+ usb_dev:'Device', usb_uac:'USB Audio Class', usb_rate:'Sample rate', usb_bits:'Bit depth', usb_ch:'Channels',
+ usb_state:'Stream', usb_uptime:'Uptime', usb_peak:'Output peak', usb_ap_vol:'AirPlay volume',
+ usb_dev_vol:'Device volume', usb_preroll:'Pre-roll buffer', playing:'Playing', idle:'Idle',
+ no_audio:'No audio', unnamed:'(unnamed device)', stg_none:'None', usb_stage:'Setup stage',
+ usb_stage_err:'(error {e}) — enumeration incomplete', usb_unavail:'USB status unavailable',
+ vol_title:'Volume Control', vol_hint:'Device volume: digital gain (100% = full-scale passthrough, same level as 100% on a PC; lower values attenuate, never clip). It is independent of the phone volume; the remote control volume keys are shown here too.',
+ vol_applied:'Device volume applied ({db} dB)', vol_fail:'Save failed', vol_save_err:'Error: {e}',
+ audio_out_title:'Audio Output', audio_fmt:'Output format', fmt_apply:'Apply format',
+ fmt_note:'Reboot the board after switching — the new format takes effect on boot. Unsupported combinations automatically fall back to the nearest format the card supports.',
+ fmt_saved:'Format saved. It will take effect after reboot.', fmt_reprobed:'Sound card re-enumerated, format applied.',
+ fmt_no_card:'No card attached — nothing to re-apply (saved; takes effect when plugged).', fmt_err:'Failed to save format',
+ latency_title:'Latency Mode', latency_normal:'Normal (180ms pre-roll · stability first)',
+ latency_low:'Low latency (60ms · snappier)', latency_ultra:'Ultra (20ms · A/V sync first)',
+ latency_hint:'Pre-roll = how much audio the receiver buffers before playback starts; it determines track-switch response and A/V sync. Lower is snappier but more prone to dropouts on a congested WiFi link. Applies at the next AirPlay session.',
+ latency_saved:'Latency mode saved; applies at next playback.', latency_err:'Failed to save latency mode',
+ dev_title:'Device Settings', dev_name:'AirPlay device name', dev_name_ph:'My Speaker', save_name:'Save name',
+ name_empty:'Enter a name', name_saved:'Saved! Restart to apply.',
+ ap_mode:'AirPlay Mode', ap_v2:'Multi-room (v2)', ap_v1:'Legacy (v1)',
+ ap_hint:'Some apps only support AirPlay v1. Apple devices still work in this mode but lose v2 features (e.g. multi-speaker sync). Hardware volume / track keys need v1 mode.',
+ ap_saved:'Saved! Restart to apply.', ap_saved_now:'Saved!', ap_err:'Save failed',
+ rem_title:'Remote Layout', rem_apple:'Apple standard (default)', rem_kef:'KEF EGG',
+ rem_hint:'Apple standard: byte[1] play=0x01 / vol+=0x02 / vol-=0x04. KEF EGG: vol+=0x01 / vol-=0x02, byte[2] play/next/prev. The two layouts reuse the same bits with opposite meanings — a wrong pick swaps keys. Applies immediately.',
+ rem_saved:'Saved, applies immediately.', rem_err:'Save failed',
+ led_title:'LED Brightness', save_brightness:'Save brightness', led_saved:'Saved!',
+ chan_title:'Output Channels', chan_stereo:'Stereo', chan_l:'Left only', chan_r:'Right only', chan_mono:'Mono (L+R)',
+ chan_in:'Input Channels', chan_dual:'Both (L+R)/2',
+ dual_title:'Second Amplifier', dual_pbtl:'Bridged mono (PBTL)', dual_btl:'Stereo (BTL)',
+ dual_warn1:'Bridge the second amplifier to mono?\n\nIt will be reconfigured as PBTL mono: OUT_A and OUT_B must be jumpered together and wired to a single speaker.\n\nRewire BEFORE restarting.',
+ dual_warn0:'Unbridge the second amplifier?\n\nIt will run as a stereo BTL pair driving two independent speakers.\n\nIf OUT_A and OUT_B are still jumpered for PBTL, undo that first — a short across the outputs makes them drive each other and can damage the amp and its output filters.',
+ dual_saved:'Saved! Rewire, then restart to apply.',
+ eq_link:'Parametric EQ (Biquad EQ)', hf_link:'HybridFlow Tuning',
+ ota_title:'Firmware Upgrade', ota_pick:'Pick file', ota_none:'No file selected', ota_up:'Upload firmware',
+ ota_need:'Pick a file first', ota_uploading:'Uploading…', ota_done:'Done! Rebooting…',
+ sys_title:'System Info', sys_ip:'IP address', sys_mac:'MAC address', sys_name:'Device name', sys_heap:'Free heap',
+ sys_fw:'Firmware', sys_uptime:'Uptime', sys_reset:'Last reset reason', sys_ssid:'WiFi SSID',
+ sys_rssi:'WiFi RSSI', sys_chan:'WiFi channel', sys_phy:'WiFi PHY', sys_bssid:'WiFi BSSID',
+ sys_restart:'Restart device', restart_ask:'Restart the device?', restarting:'Restarting…',
+ eth:'Ethernet: {ip}', wifi:'WiFi: {ip}', no_net:'Not connected — configure WiFi below',
+ d:'d ', h:'h ', m:'m ', s:'s', rssi_ex:' (excellent)', rssi_good:' (good)', rssi_ok:' (fair)', rssi_weak:' (weak)',
+ log_title:'System Log', log_desc:'Live ESP log over WebSocket', log_open:'Open log viewer',
+ spd_title:'WiFi Speed Test', spd_desc:'Measure latency and throughput to this device', spd_open:'Open speed test',
+ fmtq0:'CD quality', fmtq1:'DVD quality', fmtq2:'Hi-Res entry', fmtq3:'Hi-Res standard (studio quality, default)',
+ fmtq4:'Hi-Res (experimental)', fmtq5:'Experimental (not recommended)',
+ fmt_hint_t:'Current: {q}. 48kHz/24bit is the loudest on Windows-class cards. 44.1kHz can be quiet on some cards.'
+}
+};
+function T(k){var d=LANG?I18N.en:I18N.zh;return d&&d[k]!=null?d[k]:k;}
+function fmt(s,v){return s.replace(/\{(\w+)\}/g,function(m,k){return v&&v[k]!=null?v[k]:m;});}
+function applyI18n(){
+  document.querySelectorAll('[data-i18n]').forEach(function(e){
+    var k=e.getAttribute('data-i18n');e.textContent=T(k);});
+  document.querySelectorAll('[data-i18n-ph]').forEach(function(e){
+    e.setAttribute('placeholder',T(e.getAttribute('data-i18n-ph')));});
+  document.getElementById('lang-zh').className=LANG===0?'on':'';
+  document.getElementById('lang-en').className=LANG===1?'on':'';
+  applyChanLabels();refreshFmtHint();
+}
+function setLang(l){
+  if(l===LANG)return;
+  fetch('/api/ui/lang',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lang:l})})
+   .then(function(r){return r.json();}).catch(function(){});
+  LANG=l;applyI18n();
+}
+function msg(id,txt,type){var e=document.getElementById(id);if(e){e.innerHTML='<div class="msg '+type+'">'+txt+'</div>';setTimeout(function(){e.innerHTML='';},4000);}}
+
+/* ── WiFi ─────────────────────────────────────────────────────────────── */
+async function scanWiFi(){
+  var l=document.getElementById('wifi-list');l.innerHTML='<div class="msg info">'+T('scanning')+'</div>';
+  try{var r=await fetch('/api/wifi/scan');var d=await r.json();
+    if(d.success&&d.networks.length>0){l.innerHTML='';d.networks.forEach(function(n){
+      var i=document.createElement('div');i.className='wifi-item';
+      i.innerHTML='<span class="ssid">'+n.ssid+'</span><span class="rssi">'+n.rssi+' dBm</span>';
+      i.onclick=function(){document.querySelectorAll('.wifi-item').forEach(function(x){x.classList.remove('sel');});i.classList.add('sel');document.getElementById('wifi-ssid').value=n.ssid;};
+      l.appendChild(i);});}
+    else{l.innerHTML='<div class="msg info">'+T('no_net')+'</div>';}}
+  catch(e){l.innerHTML='<div class="msg err">'+T('scan_fail')+'</div>';}}
+async function saveWiFi(){
+  var s=document.getElementById('wifi-ssid').value.trim();var p=document.getElementById('wifi-pass').value;
+  if(!s){msg('wifi-msg',T('need_ssid'),'err');return;}
+  try{var r=await fetch('/api/wifi/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:s,password:p})});
+    var d=await r.json();if(d.success){msg('wifi-msg',T('saved_reboot'),'ok');}else{msg('wifi-msg',d.error||T('err'),'err');}}
+  catch(e){msg('wifi-msg',T('err'),'err');}}
+
+/* ── LED / channel / dual ─────────────────────────────────────────────── */
+async function loadBrightness(){
+  try{var r=await fetch('/api/led/brightness');var d=await r.json();
+    if(d.success){var s=document.getElementById('led-brightness');s.value=d.brightness;
+      document.getElementById('led-pct').textContent=Math.round(d.brightness/255*100)+'%';}}
+  catch(e){}}
+async function saveBrightness(){
+  var v=Number.parseInt(document.getElementById('led-brightness').value,10);
+  try{var r=await fetch('/api/led/brightness',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({brightness:v})});
+    var d=await r.json();if(d.success){msg('brightness-msg',T('led_saved'),'ok');}else{msg('brightness-msg',d.error||T('err'),'err');}}
+  catch(e){msg('brightness-msg',T('err'),'err');}}
+async function loadChannel(){
+  try{var r=await fetch('/api/audio/channel');var d=await r.json();
+    if(d.success){document.getElementById('chan-mode').value=String(d.mode);
+      chanLocked=!!d.locked;chanDsp=!!d.dsp;}}
+  catch(e){}
+  applyChanLabels();applyAmpLayout();}
+var dualDevices=1;var dualPbtl=true;var dualLoaded=false;
+var airplayV1=false;var remoteLayoutEgg=false;var remoteLocked=false;
+var chanLocked=false;var chanDsp=false;
+function applyChanLabels(){
+  var lbl=document.getElementById('chan-label');
+  lbl.textContent=chanDsp?T('chan_in'):T('chan_title');
+  var o=document.getElementById('chan-mode').options;
+  o[0].text=chanDsp?T('chan_dual'):T('chan_stereo');
+  o[3].text=chanDsp?T('chan_dual'):T('chan_mono');
+}
+function applyAmpLayout(){
+  document.getElementById('chan-group').style.display=
+    (chanLocked||dualDevices>1)?'none':'';
+}
+async function saveChannel(){
+  var v=Number.parseInt(document.getElementById('chan-mode').value,10);
+  try{var r=await fetch('/api/audio/channel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:v})});
+    var d=await r.json();if(d.success){msg('chan-msg',T('led_saved'),'ok');
+      if(typeof d.mode==='number'){document.getElementById('chan-mode').value=String(d.mode);}
+      chanLocked=!!d.locked;applyAmpLayout();}
+    else{msg('chan-msg',d.error||T('err'),'err');}}
+  catch(e){msg('chan-msg',T('err'),'err');}}
+async function loadDual(){
+  try{var r=await fetch('/api/audio/dual');if(!r.ok)return;var d=await r.json();
+    if(d.success&&d.devices>1){dualDevices=d.devices;dualPbtl=!!d.pbtl;
+      document.getElementById('dual-mode').value=d.pbtl?'1':'0';
+      document.getElementById('dual-group').style.display='';
+      if(d.restart_required){msg('dual-msg',T('ap_saved'),'err');}}}
+  catch(e){}
+  applyAmpLayout();}
+async function saveDual(){
+  var sel=document.getElementById('dual-mode');
+  var v=Number.parseInt(sel.value,10);
+  var pbtl=v===1;
+  if(pbtl!==dualPbtl&&!confirm(T(pbtl?'dual_warn1':'dual_warn0'))){sel.value=dualPbtl?'1':'0';return;}
+  try{var r=await fetch('/api/audio/dual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pbtl:pbtl})});
+    var d=await r.json();
+    if(d.success){dualPbtl=pbtl;msg('dual-msg',T('dual_saved'),'ok');}
+    else{sel.value=dualPbtl?'1':'0';msg('dual-msg',d.error||T('err'),'err');}}
+  catch(e){sel.value=dualPbtl?'1':'0';msg('dual-msg',T('err'),'err');}}
+
+/* ── AirPlay mode / remote layout ─────────────────────────────────────── */
+async function loadAirplayMode(){
+  try{var r=await fetch('/api/airplay/mode');if(!r.ok)return;var d=await r.json();
+    if(d.success){airplayV1=!!d.v1;
+      document.getElementById('airplay-mode').value=d.v1?'1':'0';
+      if(d.restart_required){msg('airplay-msg',T('ap_saved'),'err');}}}
+  catch(e){}}
+async function saveAirplayMode(){
+  var sel=document.getElementById('airplay-mode');
+  var v1=sel.value==='1';
+  try{var r=await fetch('/api/airplay/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({v1:v1})});
+    var d=await r.json();
+    if(d.success){airplayV1=v1;msg('airplay-msg',d.restart_required?T('ap_saved'):T('ap_saved_now'),'ok');}
+    else{sel.value=airplayV1?'1':'0';msg('airplay-msg',d.error||T('err'),'err');}}
+  catch(e){sel.value=airplayV1?'1':'0';msg('airplay-msg',T('err'),'err');}}
+async function loadRemoteLayout(){
+  try{var r=await fetch('/api/remote/layout');if(!r.ok)return;var d=await r.json();
+    if(d.success){remoteLayoutEgg=!!d.egg;remoteLocked=!!d.locked;
+      document.getElementById('remote-layout').value=d.egg?'1':'0';
+      document.getElementById('remote-group').style.display=remoteLocked?'none':'';}}
+  catch(e){}}
+async function saveRemoteLayout(){
+  var sel=document.getElementById('remote-layout');
+  var egg=sel.value==='1';
+  try{var r=await fetch('/api/remote/layout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({egg:egg})});
+    var d=await r.json();
+    if(d.success){remoteLayoutEgg=egg;msg('remote-layout-msg',T('rem_saved'),'ok');}
+    else{sel.value=remoteLayoutEgg?'1':'0';msg('remote-layout-msg',d.error||T('err'),'err');}}
+  catch(e){sel.value=remoteLayoutEgg?'1':'0';msg('remote-layout-msg',T('err'),'err');}}
+
+/* ── Audio output format + latency (v1.1) ─────────────────────────────── */
+var FMT_OPTS=[];
+async function loadFormat(){
+  try{var r=await fetch('/api/audio/format');var d=await r.json();
+    if(d.success&&d.options){
+      FMT_OPTS=d.options;
+      var sel=document.getElementById('audio-fmt');
+      sel.innerHTML='';
+      d.options.forEach(function(o){
+        var opt=document.createElement('option');
+        opt.value=String(o.fmt);
+        opt.textContent=o.label+' — '+T('fmtq'+o.fmt);
+        sel.appendChild(opt);});
+      sel.value=String(d.fmt);
+      refreshFmtHint();
+    }}
+  catch(e){}}
+function refreshFmtHint(){
+  var h=document.getElementById('fmt-hint');if(!h)return;
+  var idx=Number.parseInt(document.getElementById('audio-fmt').value,10);
+  if(isNaN(idx)||!FMT_OPTS[idx])return;
+  h.textContent=fmt(T('fmt_hint_t'),{q:FMT_OPTS[idx].label+' — '+T('fmtq'+idx)});
+}
+async function saveFormat(){
+  var v=Number.parseInt(document.getElementById('audio-fmt').value,10);
+  try{var r=await fetch('/api/audio/format',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fmt:v})});
+    var d=await r.json();
+    if(d.success){msg('fmt-msg',T('fmt_saved'),'ok');}
+    else{msg('fmt-msg',d.error||T('err'),'err');}}
+  catch(e){msg('fmt-msg',T('err'),'err');}
+  refreshFmtHint();}
+async function loadLatency(){
+  try{var r=await fetch('/api/audio/latency');var d=await r.json();
+    if(d.success){document.getElementById('latency-mode').value=String(d.mode);}}
+  catch(e){}}
+async function saveLatency(){
+  var v=Number.parseInt(document.getElementById('latency-mode').value,10);
+  try{var r=await fetch('/api/audio/latency',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:v})});
+    var d=await r.json();
+    if(d.success){msg('latency-msg',T('latency_saved'),'ok');}
+    else{msg('latency-msg',d.error||T('err'),'err');}}
+  catch(e){msg('latency-msg',T('err'),'err');}}
+
+/* ── Device name / OTA / restart ──────────────────────────────────────── */
+async function saveName(){
+  var n=document.getElementById('dev-name').value.trim();if(!n){msg('name-msg',T('name_empty'),'err');return;}
+  try{var r=await fetch('/api/device/name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});
+    var d=await r.json();if(d.success){msg('name-msg',T('name_saved'),'ok');loadInfo();}else{msg('name-msg',d.error||T('err'),'err');}}
+  catch(e){msg('name-msg',T('err'),'err');}}
+async function startOTA(){
+  var f=document.getElementById('fw-file').files[0];if(!f){msg('ota-msg',T('ota_need'),'err');return;}
+  document.getElementById('ota-btn').disabled=true;msg('ota-msg',T('ota_uploading'),'info');
+  try{await fetch('/api/ota/update',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f});msg('ota-msg',T('ota_done'),'ok');}
+  catch(e){msg('ota-msg',T('ota_done'),'ok');}}
+async function restart(){
+  if(!confirm(T('restart_ask')))return;
+  try{await fetch('/api/system/restart',{method:'POST'});msg('','',T('restarting'),'info');}catch(e){}}
+
+/* ── System info ──────────────────────────────────────────────────────── */
+async function loadInfo(){
+  try{var r=await fetch('/api/system/info');var d=await r.json();
+    if(d.success){var i=d.info;var b=document.getElementById('status-bar');
+      if(i.eth_connected){b.className='status-bar ok';b.innerHTML=fmt(T('eth'),{ip:i.ip});}
+      else if(i.wifi_connected){b.className='status-bar ok';b.innerHTML=fmt(T('wifi'),{ip:i.ip});}
+      else{b.className='status-bar err';b.innerHTML=T('no_net');}
+      document.getElementById('info-ip').textContent=i.ip||'-';
+      document.getElementById('info-mac').textContent=i.mac||'-';
+      document.getElementById('info-name').textContent=i.device_name||'-';
+      document.getElementById('info-heap').textContent=Math.round(i.free_heap/1024)+' KB';
+      document.getElementById('info-fw').textContent=i.firmware_version||'-';
+      function fmtUptime(s){if(s==null)return '-';var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+        return (d?d+T('d'):'')+(d||h?h+T('h'):'')+m+T('m')+(s%60)+T('s');}
+      document.getElementById('info-uptime').textContent=fmtUptime(i.uptime_s);
+      document.getElementById('info-reset').textContent=i.reset_reason||'-';
+      function rssiLabel(r){if(r==null)return '-';var q='';if(r>=-55)q=T('rssi_ex');else if(r>=-65)q=T('rssi_good');else if(r>=-75)q=T('rssi_ok');else q=T('rssi_weak');return r+' dBm'+q;}
+      document.getElementById('info-ssid').textContent=i.wifi_ssid||'-';
+      document.getElementById('info-rssi').textContent=rssiLabel(i.wifi_rssi);
+      document.getElementById('info-chan').textContent=i.wifi_channel||'-';
+      document.getElementById('info-phy').textContent=i.wifi_phy||'-';
+      document.getElementById('info-bssid').textContent=i.wifi_bssid||'-';
+      if(i.eq_supported||i.sub_supported){document.getElementById('eq-link').style.display='';}
+      if(i.hf1_supported||i.hf3_supported){document.getElementById('hf1-link').style.display='';}
+      if(i.dual_supported&&!dualLoaded){dualLoaded=true;loadDual();}
+      document.getElementById('dev-name').placeholder=i.device_name||'';}}catch(e){}}
+
+/* ── USB status ───────────────────────────────────────────────────────── */
+async function loadUsbStatus(){
+  try{var r=await fetch('/api/audio/usb');var d=await r.json();
+    var bar=document.getElementById('usb-status-bar'),grid=document.getElementById('usb-grid');
+    if(!bar||!grid)return;
+    if(!d.success||!d.attached){
+      grid.style.display='none';bar.style.display='';
+      bar.className='msg info';
+      bar.innerHTML=T('usb_none');
+      if(typeof d.setup_stage==='number'&&d.setup_stage>0){
+        var stg=[T('stg_none'),T('usb_stage')+'1',T('usb_stage')+'2',T('usb_stage')+'3',T('usb_stage')+'4',T('usb_stage')+'5',T('usb_stage')+'6',T('usb_stage')+'7',T('usb_stage')+'8',T('usb_stage')+'9'];
+        bar.innerHTML+='<br><span style="color:#f2b8ba;font-size:12px">'+T('usb_stage')+':'+
+          (stg[d.setup_stage]||('#'+d.setup_stage))+
+          fmt(T('usb_stage_err'),{e:(d.setup_err||0)})+'</span>';
+      }
+      return;}
+    bar.style.display='none';grid.style.display='';
+    document.getElementById('usb-product').textContent=d.product||T('unnamed');
+    document.getElementById('usb-uac').textContent='UAC '+d.uac_version;
+    document.getElementById('usb-rate').textContent=d.sample_rate+' Hz';
+    document.getElementById('usb-bits').textContent=d.bits+'-bit';
+    document.getElementById('usb-ch').textContent=d.channels+' '+T('usb_ch');
+    var st=document.getElementById('usb-state');
+    st.textContent=d.streaming?T('playing'):T('idle');
+    st.style.color=d.streaming?'#6fd89a':'#aaa';
+    var up=document.getElementById('usb-uptime');
+    if(up){up.textContent=Math.floor(d.uptime_s/60)+' '+T('m')+String(d.uptime_s%60)+' '+T('s');}
+    var peak=document.getElementById('usb-peak');
+    if(peak){peak.textContent=(typeof d.peak_dbfs==='number'&&d.peak_dbfs>-90)
+      ?d.peak_dbfs.toFixed(1)+' dBFS':T('no_audio');
+      peak.style.color=(typeof d.peak_dbfs==='number'&&d.peak_dbfs>-1)?'#f2b8ba':'#e8eaed';}
+    var ap=document.getElementById('usb-ap-vol');
+    if(ap){ap.textContent=(typeof d.airplay_volume_db==='number')
+      ?d.airplay_volume_db.toFixed(1)+' dB':'-';}
+    var dv=document.getElementById('usb-dev-vol');
+    if(dv){dv.textContent=(typeof d.device_volume_db==='number')
+      ?d.device_volume_db.toFixed(1)+' dB':'-';}
+    var pr=document.getElementById('usb-preroll');
+    if(pr){pr.textContent=(typeof d.preroll_ms==='number')?d.preroll_ms+' ms':'-';}
+  }
+  catch(e){var bar=document.getElementById('usb-status-bar');if(bar){bar.className='msg err';bar.textContent=T('usb_unavail');}}}
+
+/* ── Volume (dB -30..0 <-> 0..100%) ───────────────────────────────────── */
+function volDbToPct(db){return Math.round((db+30)/30*100);}
+function volPctToDb(p){return Math.round((-30+30*p/100)*10)/10;}
+async function loadVolume(){
+  try{var r=await fetch('/api/audio/volume');var d=await r.json();
+    var s=document.getElementById('volume-slider');if(!s)return;
+    if(d.success){var p=Math.max(0,Math.min(100,volDbToPct(d.volume_db)));
+      s.value=p;document.getElementById('vol-pct').textContent=p+'%';}}
+  catch(e){}}
+async function saveVolume(){
+  var p=Number.parseInt(document.getElementById('volume-slider').value,10);
+  var db=volPctToDb(p);
+  try{var r=await fetch('/api/audio/volume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({volume_db:db})});
+    var d=await r.json();
+    var m=document.getElementById('volume-msg');if(!m)return;
+    m.innerHTML=d.success?'<div class="msg ok">'+fmt(T('vol_applied'),{db:db})+'</div>':'<div class="msg err">'+T('vol_fail')+'</div>';
+    setTimeout(function(){m.innerHTML='';},8000);}
+  catch(e){var m=document.getElementById('volume-msg');if(m){m.innerHTML='<div class="msg err">'+fmt(T('vol_save_err'),{e:e.message})+'</div>';setTimeout(function(){m.innerHTML='';},8000);}}}
+
+window.onload=function(){
+  document.getElementById('fw-file').onchange=function(e){var f=e.target.files[0];
+    document.getElementById('fw-name').textContent=f?f.name:T('ota_none');
+    document.getElementById('ota-btn').disabled=!f;};
+  fetch('/api/ui/lang').then(function(r){return r.json();}).then(function(d){
+    if(d&&d.success){LANG=Number(d.lang)===1?1:0;applyI18n();}}).catch(function(){applyI18n();});
+  loadInfo();loadBrightness();loadChannel();loadAirplayMode();loadRemoteLayout();
+  loadUsbStatus();loadVolume();loadFormat();loadLatency();
+  setInterval(loadInfo,30000);setInterval(loadUsbStatus,3000);};
+</script></body></html>

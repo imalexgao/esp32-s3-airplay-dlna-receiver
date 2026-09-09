@@ -1,0 +1,612 @@
+menu "Airplay ESP Configuration"
+    # Board configuration is now in components/boards/Kconfig.projbuild
+
+    config REMOTE_LAYOUT_KEF_EDITION
+        bool "KEF powered-speaker edition: lock the remote layout to KEF EGG"
+        default n
+        help
+            Builds the "KEF 有源音箱（带 USB 解码器）专版". The HID remote
+            layout is compiled to the KEF EGG mapping and the web UI hides
+            the remote-layout selector; every other v1.1 feature (output
+            format selection, UI language, low-latency mode) stays available.
+            The universal build keeps the user-selectable Apple-standard /
+            KEF EGG layout.
+
+    menu "LED Configuration"
+        config LED_STATUS_BRIGHTNESS
+            int "Status LED brightness (0-100% duty for the on phase)"
+            range 0 255
+            default 60
+            help
+                Brightness level for the status LED (0=off, 255=max).
+
+        config LED_STATUS_INVERT
+            bool "Invert Status LED output (active-low)"
+            default y
+            help
+                If enabled, the status LED output is inverted (active-low).
+                Use this if your LED is connected with inverted logic
+                (e.g., LED cathode to GPIO instead of anode).
+
+        config LED_ERROR_INVERT
+            bool "Invert Error LED output (active-low)"
+            default y
+            help
+                If enabled, the error LED output is inverted (active-low).
+                Use this if your LED is connected with inverted logic
+                (e.g., LED cathode to GPIO instead of anode).
+
+        menu "Status LED Behavior"
+            choice LED_STATUS_ON_PLAYING
+                prompt "Status LED when playing"
+                default LED_STATUS_PLAYING_STEADY
+
+                config LED_STATUS_PLAYING_STEADY
+                    bool "Steady"
+                config LED_STATUS_PLAYING_BLINK_FAST
+                    bool "Blink fast"
+                config LED_STATUS_PLAYING_VU
+                    bool "VU meter"
+            endchoice
+
+            choice LED_STATUS_ON_PAUSED
+                prompt "Status LED when paused"
+                default LED_STATUS_PAUSED_BLINK_MEDIUM
+
+                config LED_STATUS_PAUSED_OFF
+                    bool "Off"
+                config LED_STATUS_PAUSED_STEADY
+                    bool "Steady"
+                config LED_STATUS_PAUSED_BLINK_SLOW
+                    bool "Blink slow"
+                config LED_STATUS_PAUSED_BLINK_MEDIUM
+                    bool "Blink medium"
+            endchoice
+
+            choice LED_STATUS_ON_STANDBY
+                prompt "Status LED when standby"
+                default LED_STATUS_STANDBY_BLINK_SLOW
+
+                config LED_STATUS_STANDBY_OFF
+                    bool "Off"
+                config LED_STATUS_STANDBY_BLINK_SLOW
+                    bool "Blink slow"
+                config LED_STATUS_STANDBY_BLINK_MEDIUM
+                    bool "Blink medium"
+            endchoice
+        endmenu
+
+        menu "RGB LED Behavior"
+            choice LED_RGB_ON_PLAYING
+                prompt "RGB LED when playing"
+                default LED_RGB_PLAYING_VU
+
+                config LED_RGB_PLAYING_OFF
+                    bool "Off"
+                config LED_RGB_PLAYING_STEADY
+                    bool "Steady color"
+                config LED_RGB_PLAYING_VU
+                    bool "VU meter"
+            endchoice
+
+            choice LED_RGB_ON_PAUSED
+                prompt "RGB LED when paused"
+                default LED_RGB_PAUSED_STEADY
+
+                config LED_RGB_PAUSED_OFF
+                    bool "Off"
+                config LED_RGB_PAUSED_STEADY
+                    bool "Steady color"
+            endchoice
+
+            choice LED_RGB_ON_STANDBY
+                prompt "RGB LED when standby"
+                default LED_RGB_STANDBY_OFF
+
+                config LED_RGB_STANDBY_OFF
+                    bool "Off"
+                config LED_RGB_STANDBY_STEADY
+                    bool "Steady color"
+            endchoice
+
+            config LED_RGB_COLOR_PAUSED
+                hex "RGB color when paused (hex)"
+                default 0x000033
+                help
+                    RGB color in hex (0xRRGGBB) for paused state.
+
+            config LED_RGB_COLOR_STANDBY
+                hex "RGB color when standby (hex)"
+                default 0x001100
+                help
+                    RGB color in hex (0xRRGGBB) for standby state.
+        endmenu
+    endmenu
+
+    menu "WiFi Configuration"
+    config DEFAULT_AP_SSID
+        string "Access Point SSID"
+        default "esp32-airplay2_setup"
+        help
+            SSID (network name) the ESP32 will broadcast.
+
+    config DEFAULT_AP_PASSWORD
+        string "Access Point Password"
+        default ""
+        help
+            Password used for the Access Point. Leave empty and set AUTH MODE to WIFI_AUTH_OPEN for no password.
+
+    config DEFAULT_AP_CHANNEL
+        int "Access Point WiFi Channel"
+        default 1
+        help
+            Be careful you might not see the access point if you use a channel not allowed in your country.
+
+    config WIFI_PREFER_5GHZ
+        bool "Prefer 5 GHz band when joining a network"
+        default n
+        help
+            When a network with the configured SSID is available on both the
+            2.4 GHz and 5 GHz bands (dual-band routers usually share one SSID),
+            prefer connecting to the 5 GHz access point. Falls back to 2.4 GHz
+            when no 5 GHz AP is found or the 5 GHz signal is too weak.
+
+            Only chips with a dual-band radio (e.g. ESP32-C5) can use 5 GHz;
+            on 2.4 GHz-only chips this option has no effect.
+
+    config WIFI_PREFER_5GHZ_MIN_RSSI
+        int "Minimum 5 GHz RSSI to prefer (dBm)"
+        default -75
+        range -95 -30
+        depends on WIFI_PREFER_5GHZ
+        help
+            If the best 5 GHz AP is weaker than this RSSI (in dBm) and a
+            2.4 GHz AP for the same SSID is available, fall back to 2.4 GHz
+            for a more reliable link. Lower (more negative) values make the
+            receiver stick to 5 GHz even at weak signal.
+    endmenu
+
+    menu "Audio Output"
+    choice AUDIO_OUTPUT_TYPE
+        prompt "Audio output type"
+        default AUDIO_OUTPUT_I2S
+        help
+            Select the audio output backend.
+
+        config AUDIO_OUTPUT_I2S
+            bool "I2S (standard DAC)"
+
+        config AUDIO_OUTPUT_SPDIF
+            bool "SPDIF (bit-banged via I2S)"
+
+        config AUDIO_OUTPUT_USB
+            bool "USB Audio Class (UAC)"
+            depends on IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32P4
+            help
+                Output audio over USB as a UAC device.
+                The ESP32 appears as a USB audio source to the connected host
+                (e.g. a USB amplifier or a PC for testing with Audacity).
+                Requires a chip with USB OTG support.
+                The USB stream defaults to 48 kHz and must match the UAC
+                sample-rate setting. AirPlay audio is resampled automatically
+                when needed.
+
+        config AUDIO_OUTPUT_USB_HOST
+            bool "USB Audio Class HOST (drive a USB DAC/headphone)"
+            depends on IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32P4
+            help
+                Act as a USB Audio Class HOST and stream AirPlay audio to a
+                connected USB-C headphone or DAC (e.g. Apple USB-C EarPods).
+                Uses the ESP-IDF USB Host library plus the
+                espressif/usb_host_uac component.
+
+                Requires a chip with USB-OTG and that the USB-C connector's
+                VBUS is powered (self-powered host: supply 5V to the board via
+                a SECOND port/pin, e.g. the UART/CH343 USB-C port). Enabling
+                this TAKES OVER the native USB-Serial/JTAG port, so flashing and
+                serial monitoring must use the external UART (CH343).
+
+                The stream runs at whatever rate the connected device
+                negotiates (48 kHz target); AirPlay audio is resampled
+                automatically.
+    endchoice
+
+    choice OUTPUT_SAMPLE_RATE
+        prompt "Output sample rate"
+        default OUTPUT_SAMPLE_RATE_44100
+        depends on !DAC_TAS57XX && !AUDIO_OUTPUT_USB
+        help
+            Sample rate for I2S/SPDIF/USB-host output. If the AirPlay source
+            sends a different rate, the audio is resampled automatically.
+
+            TAS58xx has no sample rate converter — its DSP runs at whatever
+            rate arrives — and the driver redesigns every biquad when the
+            rate changes, so 44100 is exact and skips the resampler. Pick
+            48000 only for a PPC3 process flow exported at that rate, whose
+            baked coefficients cannot be redesigned.  For USB-host output,
+            48000 is also useful for UAC1 devices (e.g. KEF EGG) whose
+            44.1 kHz path is quiet or unstable but which accept 48 kHz via
+            endpoint SET_SAMPLING_FREQ even when the descriptor only lists
+            44.1 kHz.
+
+        config OUTPUT_SAMPLE_RATE_44100
+            bool "44100 Hz (native AirPlay, no resampling)"
+        config OUTPUT_SAMPLE_RATE_48000
+            bool "48000 Hz (resampled from 44100)"
+    endchoice
+
+    config OUTPUT_SAMPLE_RATE_HZ
+        int
+        default 48000 if AUDIO_OUTPUT_USB
+        default 48000 if OUTPUT_SAMPLE_RATE_48000
+        default 44100
+
+    config RESAMPLER_TAPS
+        int "Resampler filter taps (quality)" if OUTPUT_SAMPLE_RATE_48000
+        range 4 64
+        default 28 if IDF_TARGET_ESP32S3
+        default 12 if IDF_TARGET_ESP32
+        default 16
+        help
+            Number of taps for the sinc resampler filters.
+            More taps = better quality but higher CPU cost.
+            Must be a multiple of 4.
+            ESP32-S3 (hardware FPU): 28 recommended.
+            ESP32 (no FPU): 12 recommended.
+
+    config USB_HOST_VBUS_EN_GPIO
+        int "USB host VBUS enable GPIO (-1 = none)"
+        depends on AUDIO_OUTPUT_USB_HOST
+        range -1 48
+        default -1
+        help
+            Optional GPIO driven HIGH at init to enable an external VBUS power
+            switch for the USB-C host port. Leave at -1 if the board already
+            supplies 5V to the native USB-C VBUS (self-powered host). Note:
+            GPIO5 is the ESP32-S3 reference VBUS *detect* (input) convention;
+            this option is a separate power-switch *enable* output.
+
+    endmenu
+
+    menu "USB Audio Input"
+        depends on IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32P4
+
+    config USB_AUDIO_SINK
+        bool "USB Audio Class (UAC) input"
+        depends on AUDIO_OUTPUT_I2S
+        default n
+        help
+            Enumerate on the attached computer as a stereo USB speaker and
+            play the received audio through the same I2S DAC path AirPlay
+            uses, sharing the DAC's DSP and volume control.
+
+            AirPlay is suspended while the host is streaming and resumes
+            once the stream goes idle.
+
+            CONFIG_UAC_SAMPLE_RATE must equal the output sample rate
+            (no resampling is done on this path), CONFIG_UAC_SPEAKER_CHANNEL_NUM
+            must be 2 and CONFIG_UAC_MIC_CHANNEL_NUM should be 0.
+
+            This claims the USB OTG port, so USB-Serial-JTAG console output
+            is unavailable while the firmware runs. Use the UART console and
+            hold BOOT while resetting to reflash.
+
+    config USB_AUDIO_SINK_IDLE_MS
+        int "Idle timeout before AirPlay resumes (ms)"
+        depends on USB_AUDIO_SINK
+        range 200 30000
+        default 2000
+        help
+            How long the host stream must be silent before the output is
+            handed back to AirPlay. Too short causes churn between tracks;
+            too long delays AirPlay availability after unplugging.
+
+    # usb_device_uac hides its own VID/PID/string options when
+    # USB_DEVICE_UAC_AS_PART is set, because the descriptors become ours.
+    config USB_AUDIO_SINK_VID
+        hex "USB vendor ID"
+        depends on USB_AUDIO_SINK
+        default 0x303A
+
+    config USB_AUDIO_SINK_PID
+        hex "USB product ID"
+        depends on USB_AUDIO_SINK
+        default 0x8000
+
+    config USB_AUDIO_SINK_MANUFACTURER
+        string "USB manufacturer string"
+        depends on USB_AUDIO_SINK
+        default "Espressif"
+
+    config USB_AUDIO_SINK_PRODUCT
+        string "USB product string"
+        depends on USB_AUDIO_SINK
+        default "ESP32 Audio Device"
+        help
+            Name the host shows in its sound output list. Also used for the
+            audio interface, which is what Windows Device Manager displays.
+
+    config USB_AUDIO_SINK_SERIAL
+        string "USB serial number string"
+        depends on USB_AUDIO_SINK
+        default "12345678"
+
+    endmenu
+
+    menu "Bluetooth Configuration"
+        depends on BT_A2DP_ENABLE
+
+        config BT_PIN_CODE
+            string "Bluetooth pairing PIN code"
+            default "05032026"
+            help
+                Static PIN code used for legacy Bluetooth pairing.
+                Must be 1-16 digits. Connecting devices will be
+                prompted to enter this PIN.
+
+        config BT_SSP_ENABLED
+            bool "Enable Secure Simple Pairing (SSP)"
+            default n
+            help
+                Enable SSP for Bluetooth 2.1+ devices. When enabled,
+                modern devices use numeric comparison (both sides
+                confirm a displayed number) instead of the legacy PIN.
+                A screen is required for this.
+    endmenu
+
+    menu "Display Configuration"
+        config DISPLAY_ENABLED
+            bool "Enable display"
+            default n
+            help
+                Enable an I2C or SPI OLED display for showing track metadata,
+                playback position, and a progress bar.
+
+        if DISPLAY_ENABLED
+            choice DISPLAY_DRIVER
+                prompt "Display driver"
+                default DISPLAY_DRIVER_SSD1306
+                help
+                    Select the display controller IC.
+
+                config DISPLAY_DRIVER_SSD1306
+                    bool "SSD1306 (128x64) OLED"
+                config DISPLAY_DRIVER_SH1106
+                    bool "SH1106 (128x64) OLED"
+                config DISPLAY_DRIVER_SSD1309
+                    bool "SSD1309 (128x64) OLED"
+                config DISPLAY_DRIVER_SH1107
+                    bool "SH1107 (128x128) OLED"
+                config DISPLAY_DRIVER_ST7789
+                    bool "ST7789 TFT"
+            endchoice
+
+            choice DISPLAY_HEIGHT
+                prompt "Display height"
+                default DISPLAY_HEIGHT_64
+                depends on !DISPLAY_DRIVER_ST7789
+                help
+                    Select the display pixel height. 128x32 displays use
+                    a compact two-line layout with scrolling text.
+
+                config DISPLAY_HEIGHT_64
+                    bool "64 pixels (128x64)"
+                config DISPLAY_HEIGHT_32
+                    bool "32 pixels (128x32)"
+                    depends on !DISPLAY_DRIVER_SSD1309 && !DISPLAY_DRIVER_SH1107
+            endchoice
+
+            choice DISPLAY_BUS
+                prompt "Display bus"
+                default DISPLAY_BUS_I2C
+                depends on !DISPLAY_DRIVER_ST7789
+                help
+                    Select the communication bus for the display.
+
+                config DISPLAY_BUS_I2C
+                    bool "I2C"
+                config DISPLAY_BUS_SPI
+                    bool "SPI"
+            endchoice
+
+            if DISPLAY_BUS_I2C
+                config DISPLAY_I2C_SDA
+                    int "Display I2C SDA GPIO"
+                    default 21
+                    help
+                        GPIO pin for the display I2C data line.
+
+                config DISPLAY_I2C_SCL
+                    int "Display I2C SCL GPIO"
+                    default 22
+                    help
+                        GPIO pin for the display I2C clock line.
+
+                config DISPLAY_I2C_ADDR
+                    hex "Display I2C address (7-bit)"
+                    default 0x3C
+                    help
+                        7-bit I2C address of the OLED display.
+                        Common values: 0x3C or 0x3D.
+            endif
+
+            if DISPLAY_BUS_SPI || DISPLAY_DRIVER_ST7789
+                config DISPLAY_SPI_CLK
+                    int "Display SPI CLK GPIO"
+                    default 18
+                    help
+                        GPIO pin for the display SPI clock line.
+
+                config DISPLAY_SPI_MOSI
+                    int "Display SPI MOSI GPIO"
+                    default 23
+                    help
+                        GPIO pin for the display SPI data (MOSI) line.
+
+                config DISPLAY_SPI_CS
+                    int "Display SPI CS GPIO"
+                    default 5
+                    help
+                        GPIO pin for the display SPI chip select.
+
+                config DISPLAY_SPI_DC
+                    int "Display SPI DC GPIO"
+                    default 16
+                    help
+                        GPIO pin for the display SPI data/command select.
+
+                config DISPLAY_SPI_RST
+                    int "Display SPI RST GPIO"
+                    default -1
+                    help
+                        GPIO pin for the display reset line.
+                        Set to -1 if not connected.
+
+                config DISPLAY_BL_GPIO
+                    int "Display backlight GPIO"
+                    default -1
+                    depends on DISPLAY_DRIVER_ST7789
+                    help
+                        GPIO pin for the display backlight.
+                        Set to -1 if not used or always on.
+
+                config DISPLAY_ST7789_WIDTH
+                    int "ST7789 display width"
+                    default 320
+                    depends on DISPLAY_DRIVER_ST7789
+                    help
+                        Horizontal resolution exposed to LVGL after panel
+                        rotation/mirroring.
+
+                config DISPLAY_ST7789_HEIGHT
+                    int "ST7789 display height"
+                    default 170
+                    depends on DISPLAY_DRIVER_ST7789
+                    help
+                        Vertical resolution exposed to LVGL after panel
+                        rotation/mirroring.
+
+                config DISPLAY_ST7789_GAP_X
+                    int "ST7789 panel X gap"
+                    default 0
+                    depends on DISPLAY_DRIVER_ST7789
+                    help
+                        X offset passed to esp_lcd_panel_set_gap().
+
+                config DISPLAY_ST7789_GAP_Y
+                    int "ST7789 panel Y gap"
+                    default 35
+                    depends on DISPLAY_DRIVER_ST7789
+                    help
+                        Y offset passed to esp_lcd_panel_set_gap().
+            endif
+
+            config DISPLAY_FLIP
+                bool "Flip display 180 degrees"
+                default n
+                help
+                    Rotate the display output 180 degrees.
+
+            config DISPLAY_UPDATE_MS
+                int "Display refresh interval (ms)"
+                default 500
+                range 100 5000
+                help
+                    How often the display redraws in milliseconds.
+        endif
+    endmenu
+
+    menu "AirPlay Protocol"
+        config AIRPLAY_TIMING_THRESHOLD_MS
+            int "Early/late timing threshold for buffered streams (ms)"
+            default 25
+            range 2 200
+            help
+                Maximum amount a frame may be early or late (in milliseconds)
+                before the timing engine holds it as pending (early) or drops
+                it (late). Buffered AirPlay 2 streams (AAC, type 103) have a
+                deep jitter buffer, so a tight threshold keeps tight sync
+                without causing drop-outs.
+
+                This must stay comfortably above the I2S DMA ring's own
+                jitter (about +/-3 ms with the default 8x256 descriptor
+                config) plus PTP filter excursions, otherwise normal
+                scheduling noise crosses the threshold and good audio is
+                discarded. Steady-state accuracy is maintained by the
+                one-sample drift servo rather than by a tight threshold, so
+                lowering this does not improve sync — it only increases the
+                chance of dropouts.
+
+        config AIRPLAY_RT_TIMING_THRESHOLD_MS
+            int "Early/late timing threshold for unbuffered streams (ms)"
+            default 50
+            range 2 500
+            help
+                Same as above but for unbuffered realtime streams (ALAC over
+                UDP, type 96). Realtime streams have little or no jitter
+                buffer to absorb scheduling hiccups (e.g. when image/metadata
+                arrives on the RTSP connection), so a tight threshold causes
+                audible drop-outs. A larger threshold tolerates the jitter at
+                the cost of slightly looser sync. Increase this if you still
+                hear drop-outs on AirPlay 1 / realtime playback.
+
+        config ENABLE_AIRPLAY_ARTWORK
+            bool "Enable cover-art / artwork reception"
+            default n
+            help
+                Receive cover-art images. Enable it only if you have a display
+                cabable of and want album art.
+    endmenu
+
+    menu "Button Configuration"
+        config BTN_PLAY_PAUSE_GPIO
+            int "Play/Pause button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the play/pause button (active-low, internal pull-up).
+                Set to -1 to disable.
+
+        config BTN_VOLUME_UP_GPIO
+            int "Volume Up button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the volume up button (active-low, internal pull-up).
+                Supports long-press auto-repeat.
+                Set to -1 to disable.
+
+        config BTN_VOLUME_DOWN_GPIO
+            int "Volume Down button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the volume down button (active-low, internal pull-up).
+                Supports long-press auto-repeat.
+                Set to -1 to disable.
+
+        config BTN_NEXT_GPIO
+            int "Next Track button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the next track button (active-low, internal pull-up).
+                Set to -1 to disable.
+
+        config BTN_PREV_GPIO
+            int "Previous Track button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the previous track button (active-low, internal pull-up).
+                Set to -1 to disable.
+
+        config BTN_PLAY_PAUSE_DOUBLE_CLICK
+            bool "Play/Pause double-click cycles channel mode"
+            default n
+            help
+                When enabled, a single play/pause press is deferred until the
+                double-click window expires. Two presses within that window
+                cycle the audio channel mode instead of play/pause.
+    endmenu
+endmenu

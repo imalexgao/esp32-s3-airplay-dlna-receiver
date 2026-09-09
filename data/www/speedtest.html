@@ -1,0 +1,165 @@
+<!DOCTYPE html><html><head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>WiFi 测速</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(160deg,#0a0c0f 0%,#11141a 55%,#0d1014 100%);min-height:100vh;padding:20px;color:#e8eaed}
+.wrap{max-width:560px;margin:0 auto}
+h1{font-size:24px;margin-bottom:8px;color:#f2f4f7}
+.sub{color:#98a2b3;font-size:13px;margin-bottom:20px}
+.card{background:#161a21;border:1px solid #262c36;border-radius:12px;padding:18px;margin-bottom:14px}
+.card h2{font-size:15px;color:#8ab4f8;margin-bottom:12px}
+.row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:13px}
+.row .lbl{color:#98a2b3}
+.row .val{font-weight:600;font-family:ui-monospace,monospace}
+.btn{padding:10px 16px;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;background:#5b8cff;color:#fff;width:100%;margin-top:10px}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.btn.sec{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12)}
+select,input{width:100%;padding:10px;background:#0e1116;border:1px solid #2b323d;border-radius:6px;color:#e8eaed;font-size:13px;margin-bottom:8px}
+.bar{height:6px;background:#0e1116;border-radius:3px;overflow:hidden;margin-top:8px}
+.bar>div{height:100%;background:#5b8cff;width:0%;transition:width 0.1s}
+.big{font-size:28px;font-weight:700;color:#8ab4f8}
+.unit{font-size:14px;color:#98a2b3;margin-left:4px}
+.log{font-family:ui-monospace,monospace;font-size:11px;color:#98a2b3;max-height:140px;overflow-y:auto;padding:8px;background:#0e1116;border-radius:6px;white-space:pre-wrap}
+a{color:#8ab4f8}
+</style></head><body>
+<div class='wrap'>
+<h1>WiFi 测速</h1>
+<p class='sub'>测量本浏览器与设备之间的网络延迟和吞吐量。</p>
+
+<div class='card'>
+<h2>Ping（往返延迟）</h2>
+<div class='row'><span class='lbl'>样本数</span><span class='val' id='p-n'>0</span></div>
+<div class='row'><span class='lbl'>最小</span><span class='val' id='p-min'>—</span></div>
+<div class='row'><span class='lbl'>平均</span><span class='val' id='p-avg'>—</span></div>
+<div class='row'><span class='lbl'>最大</span><span class='val' id='p-max'>—</span></div>
+<div class='row'><span class='lbl'>抖动 (标准差)</span><span class='val' id='p-jit'>—</span></div>
+<button class='btn' id='b-ping' onclick='runPing()'>执行 20 次 Ping</button>
+</div>
+
+<div class='card'>
+<h2>下载（设备 → 浏览器）</h2>
+<div style='text-align:center;padding:10px 0'><span class='big' id='dl-mbps'>0.00</span><span class='unit'>Mbit/s</span></div>
+<div class='row'><span class='lbl'>字节数</span><span class='val' id='dl-bytes'>—</span></div>
+<div class='row'><span class='lbl'>耗时</span><span class='val' id='dl-time'>—</span></div>
+<div class='bar'><div id='dl-bar'></div></div>
+<label style='font-size:12px;color:#888;margin-top:10px;display:block'>数据量</label>
+<select id='dl-size'>
+  <option value='262144'>256 KB</option>
+  <option value='1048576' selected>1 MB</option>
+  <option value='4194304'>4 MB</option>
+  <option value='8388608'>8 MB</option>
+</select>
+<button class='btn' id='b-dl' onclick='runDownload()'>开始下载测试</button>
+</div>
+
+<div class='card'>
+<h2>上传（浏览器 → 设备）</h2>
+<div style='text-align:center;padding:10px 0'><span class='big' id='ul-mbps'>0.00</span><span class='unit'>Mbit/s</span></div>
+<div class='row'><span class='lbl'>字节数</span><span class='val' id='ul-bytes'>—</span></div>
+<div class='row'><span class='lbl'>耗时</span><span class='val' id='ul-time'>—</span></div>
+<div class='bar'><div id='ul-bar'></div></div>
+<label style='font-size:12px;color:#888;margin-top:10px;display:block'>数据量</label>
+<select id='ul-size'>
+  <option value='262144'>256 KB</option>
+  <option value='1048576' selected>1 MB</option>
+  <option value='4194304'>4 MB</option>
+</select>
+<button class='btn' id='b-ul' onclick='runUpload()'>开始上传测试</button>
+</div>
+
+<div class='card'>
+<h2>日志</h2>
+<div class='log' id='log'></div>
+</div>
+
+<p style='text-align:center;margin-top:10px'><a href='/'>← 返回主页面</a></p>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+function log(s){const l=$('log');l.textContent+=s+'\n';l.scrollTop=l.scrollHeight;}
+function fmtBytes(n){if(n>=1048576)return (n/1048576).toFixed(2)+' MB';if(n>=1024)return (n/1024).toFixed(1)+' KB';return n+' B';}
+function fmtMs(ms){return ms.toFixed(2)+' ms';}
+
+async function runPing(){
+  const btn=$('b-ping');btn.disabled=true;
+  const N=20;const samples=[];
+  $('p-n').textContent='0';
+  for(let i=0;i<N;i++){
+    const t0=performance.now();
+    try{
+      await fetch('/api/speedtest/ping?'+Math.random(),{cache:'no-store'});
+      const dt=performance.now()-t0;
+      samples.push(dt);
+      $('p-n').textContent=samples.length;
+    }catch(e){log('ping 错误: '+e);break;}
+    await new Promise(r=>setTimeout(r,50));
+  }
+  if(samples.length){
+    const mn=Math.min(...samples),mx=Math.max(...samples);
+    const avg=samples.reduce((a,b)=>a+b,0)/samples.length;
+    const v=samples.reduce((a,b)=>a+(b-avg)*(b-avg),0)/samples.length;
+    const sd=Math.sqrt(v);
+    $('p-min').textContent=fmtMs(mn);
+    $('p-max').textContent=fmtMs(mx);
+    $('p-avg').textContent=fmtMs(avg);
+    $('p-jit').textContent=fmtMs(sd);
+    log(`ping n=${samples.length} min=${mn.toFixed(2)} avg=${avg.toFixed(2)} max=${mx.toFixed(2)} sd=${sd.toFixed(2)} ms`);
+  }
+  btn.disabled=false;
+}
+
+async function runDownload(){
+  const btn=$('b-dl');btn.disabled=true;
+  const bytes=parseInt($('dl-size').value);
+  $('dl-bytes').textContent=fmtBytes(bytes);
+  $('dl-mbps').textContent='0.00';
+  $('dl-bar').style.width='0%';
+  const t0=performance.now();
+  try{
+    const resp=await fetch('/api/speedtest/download?bytes='+bytes+'&_='+Math.random(),{cache:'no-store'});
+    if(!resp.ok){throw new Error('HTTP '+resp.status);}
+    const reader=resp.body.getReader();
+    let got=0;
+    while(true){
+      const {done,value}=await reader.read();
+      if(done)break;
+      got+=value.length;
+      $('dl-bar').style.width=(100*got/bytes).toFixed(1)+'%';
+      const dt=(performance.now()-t0)/1000;
+      if(dt>0)$('dl-mbps').textContent=((got*8/1e6)/dt).toFixed(2);
+    }
+    const dt=(performance.now()-t0)/1000;
+    $('dl-time').textContent=(dt*1000).toFixed(0)+' ms';
+    $('dl-mbps').textContent=((got*8/1e6)/dt).toFixed(2);
+    log(`下载 ${fmtBytes(got)} 用时 ${(dt*1000).toFixed(0)} ms = ${((got*8/1e6)/dt).toFixed(2)} Mbit/s`);
+  }catch(e){log('下载错误: '+e.message);}
+  btn.disabled=false;
+}
+
+async function runUpload(){
+  const btn=$('b-ul');btn.disabled=true;
+  const bytes=parseInt($('ul-size').value);
+  $('ul-bytes').textContent=fmtBytes(bytes);
+  $('ul-mbps').textContent='0.00';
+  $('ul-bar').style.width='0%';
+  // 预构数据（随机数据，按 64KB 分块以限制内存峰值）
+  const payload=new Uint8Array(bytes);
+  for(let i=0;i<bytes;i+=4){payload[i]=(i*73)&0xff;}
+  const t0=performance.now();
+  try{
+    const resp=await fetch('/api/speedtest/upload',{method:'POST',body:payload,headers:{'Content-Type':'application/octet-stream'}});
+    if(!resp.ok){throw new Error('HTTP '+resp.status);}
+    const dt=(performance.now()-t0)/1000;
+    const txt=await resp.text();
+    $('ul-bar').style.width='100%';
+    $('ul-time').textContent=(dt*1000).toFixed(0)+' ms';
+    $('ul-mbps').textContent=((bytes*8/1e6)/dt).toFixed(2);
+    log(`上传 ${fmtBytes(bytes)} 用时 ${(dt*1000).toFixed(0)} ms = ${((bytes*8/1e6)/dt).toFixed(2)} Mbit/s (服务器: ${txt.trim()})`);
+  }catch(e){log('上传错误: '+e.message);}
+  btn.disabled=false;
+}
+</script>
+</body></html>
