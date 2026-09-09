@@ -775,9 +775,12 @@ static void ssdp_announce_alive(void) {
 }
 
 static void ssdp_respond_ms(char *buf, int len, struct sockaddr_in *src) {
-  /* Extract the ST: line. */
+  /* Extract the ST: line (header names are case-insensitive in HTTP). */
   char st[128] = {0};
   const char *st_line = strstr(buf, "\r\nST:");
+  if (!st_line) {
+    st_line = strstr(buf, "\r\nst:");
+  }
   if (!st_line) {
     ESP_LOGW(TAG, "M-SEARCH without ST line, dropping");
     return;
@@ -790,11 +793,21 @@ static void ssdp_respond_ms(char *buf, int len, struct sockaddr_in *src) {
   }
   memcpy(st, st_line, n);
   st[n] = 0;
-  ESP_LOGI(TAG, "M-SEARCH ST='%s'", st);
+  /* Trim leading/trailing whitespace: real control points send
+   * "ST: ssdp:all" (space after colon), which otherwise never matches. */
+  char *p = st;
+  while (*p == ' ' || *p == '\t') {
+    p++;
+  }
+  size_t pl = strlen(p);
+  while (pl > 0 && (p[pl - 1] == ' ' || p[pl - 1] == '\t' || p[pl - 1] == '\r')) {
+    p[--pl] = 0;
+  }
+  ESP_LOGI(TAG, "M-SEARCH ST='%s'", p);
 
-  if (strcmp(st, "ssdp:all") != 0 && strcmp(st, URN_ROOT) != 0 &&
-      strcmp(st, URN_DEVICE) != 0 && strcmp(st, URN_AVT) != 0 &&
-      strcmp(st, URN_RC) != 0) {
+  if (strcmp(p, "ssdp:all") != 0 && strcmp(p, URN_ROOT) != 0 &&
+      strcmp(p, URN_DEVICE) != 0 && strcmp(p, URN_AVT) != 0 &&
+      strcmp(p, URN_RC) != 0) {
     ESP_LOGI(TAG, "ST not for us, dropping");
     return; /* not for us */
   }
@@ -805,8 +818,8 @@ static void ssdp_respond_ms(char *buf, int len, struct sockaddr_in *src) {
     return;
   }
 
-  const char *usn_tail = st;
-  if (strcmp(st, "ssdp:all") == 0) {
+  const char *usn_tail = p;
+  if (strcmp(p, "ssdp:all") == 0) {
     usn_tail = URN_DEVICE;
   }
   char usn[96];
@@ -823,7 +836,7 @@ static void ssdp_respond_ms(char *buf, int len, struct sockaddr_in *src) {
                         "ST: %s\r\n"
                         "USN: %s\r\n"
                         "Content-Length: 0\r\n\r\n",
-                        s_location, st, usn);
+                        s_location, p, usn);
   if (n_resp > 0) {
     sendto(s_ssdp_fd, resp, (size_t)n_resp, 0, (struct sockaddr *)src,
            sizeof(*src));
@@ -949,7 +962,10 @@ esp_err_t dlna_upnp_start_ssdp(void) {
     return ESP_OK;
   }
   s_running = true;
-  BaseType_t ok = xTaskCreate(ssdp_task, "dlna_ssdp", 4096, NULL, 5, NULL);
+  /* 4096 was too small: M-SEARCH respond path (recvfrom buf + respond +
+   * location + ESP_LOG formatting) overflowed the task stack and the
+   * watchdog flagged it — one of the boot-loop causes. 8192 gives margin. */
+  BaseType_t ok = xTaskCreate(ssdp_task, "dlna_ssdp", 8192, NULL, 5, NULL);
   if (ok != pdPASS) {
     s_running = false;
     return ESP_ERR_NO_MEM;

@@ -6,6 +6,7 @@
 
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 
 #include "audio/audio_output.h"
 #include "dlna/dlna_renderer.h"
@@ -346,7 +347,12 @@ static void stream_task(void *arg) {
   stream_format_t fmt = FMT_UNKNOWN;
 
   memset(&wav, 0, sizeof(wav));
-  s_pcm_buf = malloc(PCM_CHUNK_FRAMES * 2 * sizeof(int16_t));
+  s_pcm_buf = heap_caps_malloc(PCM_CHUNK_FRAMES * 2 * sizeof(int16_t),
+                               MALLOC_CAP_SPIRAM);
+  if (!s_pcm_buf) {
+    ESP_LOGW(TAG, "SPIRAM alloc failed, falling back to internal RAM");
+    s_pcm_buf = malloc(PCM_CHUNK_FRAMES * 2 * sizeof(int16_t));
+  }
   if (!s_pcm_buf) {
     ESP_LOGE(TAG, "pcm buf alloc failed");
     s_active = false;
@@ -540,19 +546,34 @@ esp_err_t dlna_stream_init(void) {
   if (!s_cmd_q) {
     return ESP_ERR_NO_MEM;
   }
+  /* Task is created lazily on first play: the 8K task stack + 4K PCM buffer
+   * must not compete with AirPlay service startup (ensure_audio_output was
+   * failing with ESP_ERR_NO_MEM while this task existed at boot). */
+  ESP_LOGI(TAG, "DLNA stream queue ready (task lazy-created on play)");
+  return ESP_OK;
+}
+
+static esp_err_t ensure_stream_task(void) {
+  if (s_task) {
+    return ESP_OK;
+  }
   BaseType_t ok = xTaskCreatePinnedToCore(stream_task, "dlna_stream",
                                           STREAM_TASK_STACK, NULL,
                                           STREAM_TASK_PRIO, &s_task, 0);
   if (ok != pdPASS) {
     return ESP_ERR_NO_MEM;
   }
-  ESP_LOGI(TAG, "DLNA stream task started");
+  ESP_LOGI(TAG, "DLNA stream task started (lazy)");
   return ESP_OK;
 }
 
 esp_err_t dlna_stream_play(const char *uri) {
   if (!uri || !uri[0]) {
     return ESP_ERR_INVALID_ARG;
+  }
+  esp_err_t err = ensure_stream_task();
+  if (err != ESP_OK) {
+    return err;
   }
   stream_msg_t msg;
   memset(&msg, 0, sizeof(msg));

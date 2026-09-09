@@ -2270,7 +2270,12 @@ esp_err_t audio_output_init(void) {
    * timing code; real problems (late drops, stuck anchors) are W-level and
    * still show. Comment out when debugging timing. */
   esp_log_level_set("audio_time", ESP_LOG_WARN);
-  s_pcm = xStreamBufferCreate(FIFO_TARGET_BYTES, 1);
+  s_pcm = xStreamBufferCreateWithCaps(FIFO_TARGET_BYTES, 1,
+                                      MALLOC_CAP_SPIRAM);
+  if (!s_pcm) {
+    ESP_LOGW(TAG, "SPIRAM FIFO failed, falling back to internal RAM");
+    s_pcm = xStreamBufferCreate(FIFO_TARGET_BYTES, 1);
+  }
   s_ctrl_sem = xSemaphoreCreateBinary();
   if (!s_pcm || !s_ctrl_sem)
     return ESP_ERR_NO_MEM;
