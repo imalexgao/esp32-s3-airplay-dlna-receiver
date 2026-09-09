@@ -1,1 +1,0 @@
-M2 (stage 1): DLNA media stream transport — HTTP pull + WAV/PCM passthrough into shared USB pipeline via audio_output_usb_host_feed_pcm (resample->LED->volume->channel->FIFO->iso OUT); renderer play/pause/stop/seek wired to stream; httpd stack 16384->12288 (per-socket task stack is live RAM: 16K x 3 sockets hurt boot heap)

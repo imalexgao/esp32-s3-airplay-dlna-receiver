@@ -44,3 +44,6 @@ raw_test.py
 listen_notify.py
 udp_send.ps1
 check_msg.ps1
+watchdog.py
+watchdog_state.json
+commit_msg*.txt
