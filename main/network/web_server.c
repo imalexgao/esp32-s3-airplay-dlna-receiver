@@ -20,6 +20,7 @@
 #include "ethernet.h"
 #include "ota.h"
 #include "log_stream.h"
+#include "dlna/dlna_upnp.h"
 #include "rtsp_server.h"
 #include "rtsp_events.h"
 #include "audio_output.h"
@@ -2669,6 +2670,9 @@ esp_err_t web_server_start(uint16_t port) {
 #endif
   config.max_uri_handlers += 2; // /api/remote/layout get/post
   config.max_uri_handlers += 6; // /api/audio/format + /api/ui/lang + /api/audio/latency (get/post each)
+#ifdef CONFIG_DLNA_ENABLE
+  config.max_uri_handlers += 7; // DLNA: description + 2 SCPD + 2 control + 2 event
+#endif
 #ifdef CONFIG_AUDIO_OUTPUT_USB_HOST
   config.max_uri_handlers += 1; // /api/usb/reprobe
 #endif
@@ -3015,6 +3019,11 @@ esp_err_t web_server_start(uint16_t port) {
 #endif
 
   log_stream_register(s_server);
+
+#ifdef CONFIG_DLNA_ENABLE
+  dlna_upnp_register(s_server);
+  dlna_upnp_start_ssdp();
+#endif
 
   ESP_LOGI(TAG, "Web server started on port %d with captive portal support",
            port);

@@ -1,0 +1,1 @@
+M1: DLNA/UPnP MediaRenderer core — SSDP discovery + SOAP control (AVTransport/RenderingControl) + source arbiter (single-active, last-writer-wins)

@@ -12,6 +12,15 @@ menu "Airplay ESP Configuration"
             The universal build keeps the user-selectable Apple-standard /
             KEF EGG layout.
 
+    config DLNA_ENABLE
+        bool "Enable DLNA/UPnP Media Renderer (AirPlay + DLNA dual source)"
+        default y
+        help
+            Adds a UPnP AV MediaRenderer (SSDP discovery + SOAP control)
+            so Android apps (BubbleUPnP / Hi-Fi Cast) can stream audio to
+            the device, alongside AirPlay. The source arbiter enforces a
+            single active source (last-writer-wins).
+
     menu "LED Configuration"
         config LED_STATUS_BRIGHTNESS
             int "Status LED brightness (0-100% duty for the on phase)"

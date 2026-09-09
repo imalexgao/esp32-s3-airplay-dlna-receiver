@@ -17,6 +17,10 @@
 #include "log_stream.h"
 #include "wifi.h"
 #include "spiffs_storage.h"
+#ifdef CONFIG_DLNA_ENABLE
+#include "dlna/dlna_renderer.h"
+#include "dlna/source_arbiter.h"
+#endif
 
 #ifdef CONFIG_BT_A2DP_ENABLE
 #include "a2dp_sink.h"
@@ -341,6 +345,10 @@ void app_main(void) {
   log_stream_init();
   ESP_ERROR_CHECK(playback_control_init());
   led_init();
+#ifdef CONFIG_DLNA_ENABLE
+  dlna_renderer_init();
+  source_arbiter_init();
+#endif
   log_dram("spiffs+log");
 
   // Initialize board-specific hardware (includes I2C/SPI bus for display and

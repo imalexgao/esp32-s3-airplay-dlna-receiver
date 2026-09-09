@@ -48,6 +48,9 @@ set( SRC_FILES
     "buttons.c"
     "playback_control.c"
     "dacp_client.c"
+    "dlna/source_arbiter.c"
+    "dlna/dlna_renderer.c"
+    "dlna/dlna_upnp.c"
 )
 
 # Select audio output implementation at compile time. audio_output_common.c
@@ -88,6 +91,7 @@ set( INC_DIRS
     "hap" 
     "network"
     "usb"
+    "dlna"
 )
 
 set( DEPS
