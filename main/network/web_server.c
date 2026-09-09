@@ -2690,7 +2690,7 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_uri_handlers += 11; // tuning page + HF1/HF3 get/post/commit/revert
 #endif
   config.max_resp_headers = 8;
-  config.stack_size = 8192;
+  config.stack_size = 16384; // DLNA SOAP handlers need ~5KB of stack; keep headroom
 
   esp_err_t err = httpd_start(&s_server, &config);
   if (err != ESP_OK) {

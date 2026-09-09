@@ -31,3 +31,16 @@ user_platformio.ini
 
 # 8.8 MB reference doc — download from ti.com rather than tracking it
 components/dac_tas58xx/TAS58xx Tuning Guide.pdf
+
+# DLNA debugging scratch (local only)
+ws_*.log
+ws_*.err
+soap_test*.py
+soap_test.xml
+ssdp_test*.py
+ssdp_test.ps1
+route_test*.py
+raw_test.py
+listen_notify.py
+udp_send.ps1
+check_msg.ps1

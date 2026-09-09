@@ -1,0 +1,1 @@
+M1 fixes: httpd stack 8192->16384 (SOAP POST stack overflow, POSTs hung), soap_handler buffers 4096->2048; SSDP location via wifi_get_ip_str + AP fallback; SSDP diagnostic logging (recv/ST/location/sendto)

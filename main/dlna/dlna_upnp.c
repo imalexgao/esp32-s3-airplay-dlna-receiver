@@ -14,6 +14,7 @@
 
 #include "dlna/dlna_renderer.h"
 #include "audio/audio_output.h"
+#include "network/wifi.h"
 #include "settings.h"
 
 static const char *TAG = "dlna_upnp";
@@ -49,17 +50,20 @@ static void make_uuid(void) {
 }
 
 static int get_sta_ip(char *ip, size_t sz) {
-  esp_netif_t *n = esp_netif_get_handle_from_ifkey("WIFI_STA");
-  if (!n) {
-    return -1;
+  if (wifi_get_ip_str(ip, sz) == ESP_OK && ip[0] && strcmp(ip, "0.0.0.0") != 0) {
+    return 0;
   }
-  esp_netif_ip_info_t info;
-  if (esp_netif_get_ip_info(n, &info) != ESP_OK ||
-      ip4_addr_isany_val(info.ip)) {
-    return -1;
+  /* Fall back to the AP interface (hotspot-only mode). */
+  esp_netif_t *ap = esp_netif_get_handle_from_ifkey("WIFI_AP");
+  if (ap) {
+    esp_netif_ip_info_t info;
+    if (esp_netif_get_ip_info(ap, &info) == ESP_OK &&
+        !ip4_addr_isany_val(info.ip)) {
+      snprintf(ip, sz, IPSTR, IP2STR(&info.ip));
+      return 0;
+    }
   }
-  snprintf(ip, sz, IPSTR, IP2STR(&info.ip));
-  return 0;
+  return -1;
 }
 
 static void refresh_location(void) {
@@ -67,6 +71,9 @@ static void refresh_location(void) {
   if (get_sta_ip(ip, sizeof(ip)) == 0) {
     snprintf(s_location, sizeof(s_location), "http://%s:%d/description.xml",
              ip, HTTP_PORT);
+    ESP_LOGI(TAG, "LOCATION=%s", s_location);
+  } else {
+    ESP_LOGW(TAG, "get_sta_ip failed (ip='%s')", ip);
   }
 }
 
@@ -422,8 +429,10 @@ static esp_err_t description_handler(httpd_req_t *req) {
 }
 
 static esp_err_t soap_handler(httpd_req_t *req, bool avt) {
-  char body[4096];
-  read_body(req, body, sizeof(body));
+  char body[2048];
+  ESP_LOGI(TAG, "soap POST start: len=%d avt=%d", req->content_len, avt);
+  int got = read_body(req, body, sizeof(body));
+  ESP_LOGI(TAG, "soap POST body read: %d bytes", got);
 
   char action_hdr[128] = {0};
   httpd_req_get_hdr_value_str(req, "SOAPAction", action_hdr,
@@ -441,7 +450,7 @@ static esp_err_t soap_handler(httpd_req_t *req, bool avt) {
     action[n] = 0;
   }
 
-  char resp[4096];
+  char resp[2048];
   if (avt) {
     avt_action(action, body, resp, sizeof(resp));
   } else {
@@ -770,6 +779,7 @@ static void ssdp_respond_ms(char *buf, int len, struct sockaddr_in *src) {
   char st[128] = {0};
   const char *st_line = strstr(buf, "\r\nST:");
   if (!st_line) {
+    ESP_LOGW(TAG, "M-SEARCH without ST line, dropping");
     return;
   }
   st_line += 5;
@@ -780,15 +790,18 @@ static void ssdp_respond_ms(char *buf, int len, struct sockaddr_in *src) {
   }
   memcpy(st, st_line, n);
   st[n] = 0;
+  ESP_LOGI(TAG, "M-SEARCH ST='%s'", st);
 
   if (strcmp(st, "ssdp:all") != 0 && strcmp(st, URN_ROOT) != 0 &&
       strcmp(st, URN_DEVICE) != 0 && strcmp(st, URN_AVT) != 0 &&
       strcmp(st, URN_RC) != 0) {
+    ESP_LOGI(TAG, "ST not for us, dropping");
     return; /* not for us */
   }
 
   refresh_location();
   if (!s_location[0]) {
+    ESP_LOGW(TAG, "location empty, cannot respond");
     return;
   }
 
@@ -820,6 +833,7 @@ static void ssdp_respond_ms(char *buf, int len, struct sockaddr_in *src) {
 
 static void ssdp_task(void *arg) {
   (void)arg;
+  ESP_LOGI(TAG, "SSDP task started");
   s_ssdp_fd = socket(AF_INET, SOCK_DGRAM, 0);
   if (s_ssdp_fd < 0) {
     ESP_LOGE(TAG, "SSDP socket failed");
@@ -847,7 +861,9 @@ static void ssdp_task(void *arg) {
   memset(&mreq, 0, sizeof(mreq));
   inet_aton(SSDP_ADDR, &mreq.imr_multiaddr);
   mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-  setsockopt(s_ssdp_fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
+  int mr = setsockopt(s_ssdp_fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq,
+                      sizeof(mreq));
+  ESP_LOGI(TAG, "SSDP mcast join rc=%d", mr);
 
   struct timeval tv = {2, 0};
   setsockopt(s_ssdp_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -868,6 +884,8 @@ static void ssdp_task(void *arg) {
                      (struct sockaddr *)&src, &srclen);
     if (n > 0) {
       buf[n] = 0;
+      ESP_LOGI(TAG, "SSDP recv %d bytes from %s:%d: %.24s", n,
+               inet_ntoa(src.sin_addr), ntohs(src.sin_port), buf);
       if (strncmp(buf, "M-SEARCH", 8) == 0) {
         ssdp_respond_ms(buf, n, &src);
       }
@@ -876,6 +894,7 @@ static void ssdp_task(void *arg) {
     if (now - last_alive > ALIVE_INTERVAL_US) {
       last_alive = now;
       ssdp_announce_alive();
+      ESP_LOGI(TAG, "SSDP alive announced");
     }
   }
 
