@@ -1,0 +1,253 @@
+﻿connecting to ws://192.168.66.71/ws/logs
+[0;32mI (9332) main: DRAM after eth+wifi      : 196967 free, 114688 largest, 8370536 SPIRAM[0m
+[0;32mI (9342) log_stream: Log streaming on /ws/logs[0m
+[0;32mI (9345) dlna_upnp: LOCATION=http://192.168.66.71:80/description.xml[0m
+[0;32mI (9352) dlna_upnp: UPnP endpoints registered (UDN=uuid:c49e7e07-2d5c-404-80e-7e072d5cc49e)[0m
+[0;32mI (9361) dlna_upnp: SSDP task started[0m
+[0;32mI (9366) dlna_upnp: SSDP mcast join rc=0[0m
+[0;32mI (9370) dlna_upnp: SSDP listening on 239.255.255.250:1
+USB host client ready; waiting for a USB speaker/headphone[0m
+[0;32mI (9665) audio_resample: Resampler: 44100 -> 48000 Hz, taps=28, filters=160, interp=OFF[0m
+[0;32mI (9668) mdns_mem: mDNS task will be created from SPIRAM[0m
+[0;32mI (9669) mdns_airplay: mDNS hostname: KEF-EGG.local (device name: KEF EGG)[0m
+[0;32mI (9677) mdns_airplay: _raop._tcp advertised on port 7000 (AirPlay 2)[0m
+[0;32mI (9684) audio_uac_host: Device volume: -15.0 dB (digital gain)[0m
+[0;32mI (9851) audio_uac_ho
+=48000 | Mic iface=255 alt=0 ep=0x00 ch=0 | AC iface=0 clocks=0 FUs=1 mic_fu=0[0m
+[0;32mI (9897) audio_uac_host: Pre-stream: probing speaker FU 3[0m
+[0;32mI (9902) audio_uac_host: FU 3 volume range: -62.0..0.0 dB[0m
+[0;32mI (9927) audio_uac_host: FU 3 SET 0 dB: ok | GET back: ok (0.0 dB)[0m
+[0;32mI (9946) audio_uac_host: FU 3 SET +6 dB: ok | GET back: ok (6.0 dB)  [positive headroom probe][0m
+[0;32mI (9965) audio_uac_host:   FU 3 holds +12 dB (readback 12.0)[0m
+[0;32mI (9984) audio_u
+0.0 / 0.0 dB[0m
+[0;32mI (10099) audio_uac_host: Streaming: ep=0x01 rate=48000 (48+frac samp/frame) x 8 pkt x 4 urbs[0m
+[0;32mI (10105) audio_uac_host: SET_INTERFACE(iface=1 alt=2): ESP_OK[0m
+[0;32mI (10112) audio_uac_host: UAC1 set ep 0x01 rate 48000 Hz: ESP_OK[0m
+[0;32mI (10118) audio_resample: Resampler: 44100 -> 48000 Hz, taps=28, filters=160, interp=OFF[0m
+[0;32mI (10122) audio_uac_host: UAC1 ep rate readback: 0 Hz (asked 48000)[0m
+[0;32mI (10138) audio_uac_host: USB audio OUT st
+[0;32mI (10402) main: AirPlay ready[0m
+[0;32mI (10405) main: DRAM after airplay       :  70515 free,  31744 largest, 8234052 SPIRAM[0m
+[0;32mI (10414) main: DRAM after boot baseline :  70515 free,  31744 largest, 8234052 SPIRAM[0m
+[0;32mI (10422) buttons: No buttons configured[0m
+[0;32mI (15312) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (20102) audio_uac_host: tlm xfers=1250 xerr=0 pkterr=0 push=0B fifo=0/46080 ur=0 rx=0 gap=0[0m
+[0;32
+* HTTP/1.1
+
+HOS[0m
+[0;32mI (25859) dlna_upnp: M-SEARCH ST='urn:dial-multiscreen-org:service:dial:1'[0m
+[0;32mI (25864) dlna_upnp: ST not for us, dropping[0m
+[0;32mI (26882) dlna_upnp: SSDP recv 170 bytes from 192.168.66.30:49640: M-SEARCH * HTTP/1.1
+
+HOS[0m
+[0;32mI (26883) dlna_upnp: M-SEARCH ST='urn:dial-multiscreen-org:service:dial:1'[0m
+[0;32mI (26888) dlna_upnp: ST not for us, dropping[0m
+[0;32mI (27804) dlna_upnp: SSDP recv 170 bytes from 192.168.66.30:49640: M-SEARCH * HTTP/1.1
+
+[0;32mI (34260) dlna_upnp: LOCATION=http://192.168.66.71:80/description.xml[0m
+[0;32mI (34268) dlna_upnp: Responded to M-SEARCH (ST= upnp:rootdevice)[0m
+[0;32mI (34274) dlna_upnp: SSDP recv 101 bytes from 192.168.66.200:47232: M-SEARCH * HTTP/1.1
+
+HOS[0m
+[0;32mI (34283) dlna_upnp: M-SEARCH ST='upnp:rootdevice'[0m
+[0;32mI (34288) dlna_upnp: LOCATION=http://192.168.66.71:80/description.xml[0m
+[0;32mI (34296) dlna_upnp: Responded to M-SEARCH (ST= upnp:rootdevice)[0m
+[0;32mI (35382) dl
+[0;32mI (50103) audio_uac_host: tlm xfers=5000 xerr=0 pkterr=0 push=0B fifo=0/46080 ur=0 rx=0 gap=0[0m
+
+[0;32mI (50334) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (51154) dlna_upnp: SSDP recv 604 bytes from 192.168.66.126:47198: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51161) dlna_upnp: SSDP recv 613 bytes from 192.168.66.126:47198: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51167) dlna_upnp: SSDP recv 656 bytes from 192.168.66.126:47198: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51174) dlna_upnp: SSDP recv 613 bytes from 192.168.66.126:36627: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51181) dlna_upnp: SSDP recv 613 bytes from 192.168.66.126:48568: NOTIFY * 
+[0;32mI (51257) dlna_upnp: SSDP recv 670 bytes from 192.168.66.126:36333: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51264) dlna_upnp: SSDP recv 662 bytes from 192.168.66.126:57228: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51270) dlna_upnp: SSDP recv 668 bytes from 192.168.66.126:47462: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51277) dlna_upnp: SSDP recv 652 bytes from 192.168.66.126:36083: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51283) dlna_upnp: SSDP recv 662 bytes from 192.168.66.126:51330: NOTIFY * 
+[0;32mI (51360) dlna_upnp: SSDP recv 668 bytes from 192.168.66.126:46190: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51366) dlna_upnp: SSDP recv 656 bytes from 192.168.66.126:45977: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51373) dlna_upnp: SSDP recv 670 bytes from 192.168.66.126:49554: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51379) dlna_upnp: SSDP recv 604 bytes from 192.168.66.126:56776: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51386) dlna_upnp: SSDP recv 613 bytes from 192.168.66.126:56776: NOTIFY * 
+[0;32mI (51464) dlna_upnp: SSDP recv 652 bytes from 192.168.66.126:59791: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51470) dlna_upnp: SSDP recv 658 bytes from 192.168.66.126:55956: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51477) dlna_upnp: SSDP recv 668 bytes from 192.168.66.126:42638: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51484) dlna_upnp: SSDP recv 662 bytes from 192.168.66.126:33217: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51490) dlna_upnp: SSDP recv 660 bytes from 192.168.66.126:33411: NOTIFY * 
+[0;32mI (51566) dlna_upnp: SSDP recv 654 bytes from 192.168.66.126:46557: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51573) dlna_upnp: SSDP recv 644 bytes from 192.168.66.126:53176: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51579) dlna_upnp: SSDP recv 668 bytes from 192.168.66.126:37423: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51586) dlna_upnp: SSDP recv 613 bytes from 192.168.66.126:45166: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (51593) dlna_upnp: SSDP recv 656 bytes from 192.168.66.126:45166: NOTIFY * 
+[0;32mI (55350) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (60005) dlna_upnp: soap POST start: len=271 avt=1[0m
+[0;32mI (60006) dlna_upnp: soap POST body read: 271 bytes[0m
+[0;32mI (60006) dlna_renderer: DLNA STOP (output released)[0m
+
+[0;32mI (60103) audio_uac_host: tlm xfers=6250 xerr=0 pkterr=0 push=0B fifo=0/46080 ur=0 rx=0 gap=0[0m
+
+[0;32mI (60367) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (64257) dlna_upnp: SSDP recv 101 bytes from 192.168.100.101:48885: M-SEARCH * HTTP/1.1
+
+HOS[0m
+[0;32mI (64258) dlna_upnp: M-SEARCH ST='upnp:rootdevice'[0m
+[0;32mI (64261) dlna_upnp: LOCATION=http://192.168.66.71:80/description.xml[0m
+[0;32mI (64269) dlna_upnp: Responded to M-SEARCH (ST= upnp:rootdevice)[0m
+[0;32mI (64275) dlna_upnp: SSDP recv 101 bytes from 192.168.66.200:47232: M-SEARCH * HTTP/1.1
+
+HOS[0m
+[0;32mI (64284) dlna_upnp: M-SEARCH ST='upnp:rootdevice'[0m
+[0;32mI (
+[0;32mI (65284) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (68087) dlna_upnp: soap POST start: len=402 avt=1[0m
+[0;32mI (68088) dlna_upnp: soap POST body read: 402 bytes[0m
+[0;32mI (68088) dlna_renderer: SetAVTransportURI: http://192.168.66.30:8000/test_dlna.aac[0m
+
+[0;32mI (70103) audio_uac_host: tlm xfers=7500 xerr=0 pkterr=0 push=0B fifo=0/46080 ur=0 rx=0 gap=0[0m
+
+[0;32mI (70304) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (70304) dlna_upnp: LOCATION=http://192.168.66.71:80/description.xml[0m
+[0;32mI (70312) dlna_upnp: SSDP alive announced[0m
+
+[0;32mI (75318) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (77152) dlna_upnp: soap POST start: len=287 avt=1[0m
+[0;32mI (77152) dlna_upnp: soap POST body read: 287 bytes[0m
+[0;32mI (77154) dlna_stream: DLNA stream task started (lazy, PSRAM stack)[0m
+[0;32mI (77154) dlna_stream: DLNA stream stopped[0m
+[0;32mI (77159) dlna_renderer: DLNA PLAY (source arbiter: dlna active)[0m
+[0;32mI (77205) dlna_stream: HTTP 163700, content-length=163700[0m
+[0;32mI (77205) dlna_stream: stream format: AAC[0m
+
+WS ERR [WinError 10054] 远程主机强迫关闭了一个现有的连接。
+WS closed
+reconnecting in 2s...
+connecting to ws://192.168.66.71/ws/logs
+[0;32mI (1152) dacp: DACP client initialized[0m
+[0;32mI (1152) playback_ctrl: Playback control initialized[0m
+[0;32mI (1157) led: Initializing LED subsystem[0m
+[0;32mI (1161) led:   Status LED GPIO: -1[0m
+[0;32mI (1166) led:   Error LED GPIO: -1[0m
+[0;32mI (1170) led:   RGB LED GPIO: 48[0m
+[0;32mI (1174) led:   LED brightness: 60[0m
+[0;32mI (1179) led: RGB LED initialized on GPIO 48[0m
+[0;32mI (1183) led: Starting in STANDBY state[0m
+[0;32mI (1187) led: LED state change: 0 -> 
+ 192.168.66.71, mask: 255.255.255.0, gw: 192.168.66.1[0m
+[0;32mI (9368) main: DRAM after eth+wifi      : 196955 free, 114688 largest, 8370536 SPIRAM[0m
+[0;32mI (9378) log_stream: Log streaming on /ws/logs[0m
+[0;32mI (9381) dlna_upnp: LOCATION=http://192.168.66.71:80/description.xml[0m
+[0;32mI (9388) dlna_upnp: UPnP endpoints registered (UDN=uuid:c49e7e07-2d5c-404-80e-7e072d5cc49e)[0m
+[0;32mI (9397) dlna_upnp: SSDP task started[0m
+[0;32mI (9402) dlna_upnp: SSDP mcast join rc=0[0m
+[0
+ve) output, rate=48000[0m
+[0;32mI (9487) audio_uac_host: USB host client ready; waiting for a USB speaker/headphone[0m
+[0;32mI (9704) audio_resample: Resampler: 44100 -> 48000 Hz, taps=28, filters=160, interp=OFF[0m
+[0;32mI (9706) mdns_mem: mDNS task will be created from SPIRAM[0m
+[0;32mI (9708) mdns_airplay: mDNS hostname: KEF-EGG.local (device name: KEF EGG)[0m
+[0;32mI (9716) mdns_airplay: _raop._tcp advertised on port 7000 (AirPlay 2)[0m
+[0;32mI (9722) audio_uac_host: Device volum
+ audio_uac_host: Speaker iface=1 alt=2 ep=0x01 mps=576 rate=48000 | Mic iface=255 alt=0 ep=0x00 ch=0 | AC iface=0 clocks=0 FUs=1 mic_fu=0[0m
+[0;32mI (9933) audio_uac_host: Pre-stream: probing speaker FU 3[0m
+[0;32mI (9938) audio_uac_host: FU 3 volume range: -62.0..0.0 dB[0m
+[0;32mI (9962) audio_uac_host: FU 3 SET 0 dB: ok | GET back: ok (0.0 dB)[0m
+[0;32mI (9981) audio_uac_host: FU 3 SET +6 dB: ok | GET back: ok (6.0 dB)  [positive headroom probe][0m
+[0;32mI (10000) audio_uac_host:   F
+(10134) audio_uac_host: FU ch1/ch2 readback after 0dB write: 0.0 / 0.0 dB[0m
+[0;32mI (10135) audio_uac_host: Streaming: ep=0x01 rate=48000 (48+frac samp/frame) x 8 pkt x 4 urbs[0m
+[0;32mI (10141) audio_uac_host: SET_INTERFACE(iface=1 alt=2): ESP_OK[0m
+[0;32mI (10148) audio_uac_host: UAC1 set ep 0x01 rate 48000 Hz: ESP_OK[0m
+[0;32mI (10154) audio_resample: Resampler: 44100 -> 48000 Hz, taps=28, filters=160, interp=OFF[0m
+[0;32mI (10157) audio_uac_host: UAC1 ep rate readback: 0 Hz (asked
+[0;32mI (12504) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (16390) dlna_upnp: SSDP recv 101 bytes from 192.168.66.200:47232: M-SEARCH * HTTP/1.1
+
+HOS[0m
+[0;32mI (16390) dlna_upnp: M-SEARCH ST='upnp:rootdevice'[0m
+[0;32mI (16394) dlna_upnp: LOCATION=http://192.168.66.71:80/description.xml[0m
+[0;32mI (16402) dlna_upnp: Responded to M-SEARCH (ST= upnp:rootdevice)[0m
+[0;32mI (16408) dlna_upnp: SSDP recv 101 bytes from 192.168.100.101:48885: M-SEARCH * HTTP/1.1
+
+HOS[0m
+[0;32mI (16417) dlna_upnp: M-SEARCH ST='upnp:rootdevice'[0m
+[0;32mI (
+[0;32mI (17415) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (20138) audio_uac_host: tlm xfers=1250 xerr=0 pkterr=0 push=0B fifo=0/46080 ur=0 rx=0 gap=0[0m
+
+[0;32mI (22433) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (27451) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+

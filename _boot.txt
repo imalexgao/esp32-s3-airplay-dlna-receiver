@@ -1,0 +1,141 @@
+﻿connecting to ws://192.168.66.71/ws/logs
+[0;32mI (76817) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (80136) audio_uac_host: tlm xfers=8750 xerr=0 pkterr=0 push=0B fifo=0/46080 ur=0 rx=0 gap=0[0m
+
+[0;32mI (80912) dlna_upnp: SSDP recv 101 bytes from 192.168.66.200:47232: M-SEARCH * HTTP/1.1
+
+HOS[0m
+[0;32mI (80913) dlna_upnp: M-SEARCH ST='upnp:rootdevice'[0m
+[0;32mI (80916) dlna_upnp: LOCATION=http://192.168.66.71:80/description.xml[0m
+[0;32mI (80924) dlna_upnp: Responded to M-SEARCH (ST= upnp:rootdevice)[0m
+[0;32mI (80930) dlna_upnp: SSDP recv 101 bytes from 192.168.100.101:48885: M-SEARCH * HTTP/1.1
+
+HOS[0m
+[0;32mI (80939) dlna_upnp: M-SEARCH ST='upnp:rootdevice'[0m
+[0;32mI (
+[0;32mI (81835) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (86853) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (90136) audio_uac_host: tlm xfers=10000 xerr=0 pkterr=0 push=0B fifo=0/46080 ur=0 rx=0 gap=0[0m
+
+[0;32mI (91872) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (96888) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (97812) dlna_upnp: SSDP recv 604 bytes from 192.168.66.126:45522: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (97818) dlna_upnp: SSDP recv 613 bytes from 192.168.66.126:45522: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (97825) dlna_upnp: SSDP recv 658 bytes from 192.168.66.126:40580: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (97832) dlna_upnp: SSDP recv 656 bytes from 192.168.66.126:45522: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (97838) dlna_upnp: SSDP recv 613 bytes from 192.168.66.126:54788: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (97847) dlna_upnp: SSDP recv 670 bytes from 192.168.66.126:59511: NOTIFY * 
+[0;32mI (97921) dlna_upnp: SSDP recv 660 bytes from 192.168.66.126:41433: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (97928) dlna_upnp: SSDP recv 662 bytes from 192.168.66.126:58598: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (97935) dlna_upnp: SSDP recv 660 bytes from 192.168.66.126:44931: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (97942) dlna_upnp: SSDP recv 662 bytes from 192.168.66.126:53633: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (97950) dlna_upnp: SSDP recv 644 bytes from 192.168.66.126:53992: NOTIFY * 
+[0;32mI (98017) dlna_upnp: SSDP recv 656 bytes from 192.168.66.126:42633: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (98024) dlna_upnp: SSDP recv 668 bytes from 192.168.66.126:35558: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (98031) dlna_upnp: SSDP recv 670 bytes from 192.168.66.126:43799: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (98037) dlna_upnp: SSDP recv 604 bytes from 192.168.66.126:34364: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (98044) dlna_upnp: SSDP recv 613 bytes from 192.168.66.126:34364: NOTIFY * 
+[0;32mI (98121) dlna_upnp: SSDP recv 660 bytes from 192.168.66.126:57899: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (98127) dlna_upnp: SSDP recv 670 bytes from 192.168.66.126:38384: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (98140) dlna_upnp: SSDP recv 660 bytes from 192.168.66.126:45157: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (98147) dlna_upnp: SSDP recv 613 bytes from 192.168.66.126:56067: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (98153) dlna_upnp: SSDP recv 662 bytes from 192.168.66.126:58307: NOTIFY * 
+[0;32mI (98223) dlna_upnp: SSDP recv 654 bytes from 192.168.66.126:34834: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (98230) dlna_upnp: SSDP recv 644 bytes from 192.168.66.126:50267: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (98236) dlna_upnp: SSDP recv 613 bytes from 192.168.66.126:52788: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (98242) dlna_upnp: SSDP recv 656 bytes from 192.168.66.126:52788: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (98249) dlna_upnp: SSDP recv 668 bytes from 192.168.66.126:47970: NOTIFY * 
+[0;32mI (100137) audio_uac_host: tlm xfers=11250 xerr=0 pkterr=0 push=0B fifo=0/46080 ur=0 rx=0 gap=0[0m
+
+[0;32mI (101807) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+[0;32mI (101808) dlna_upnp: LOCATION=http://192.168.66.71:80/description.xml[0m
+[0;32mI (101815) dlna_upnp: SSDP alive announced[0m
+
+[0;32mI (106820) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (110137) audio_uac_host: tlm xfers=12500 xerr=0 pkterr=0 push=0B fifo=0/46080 ur=0 rx=0 gap=0[0m
+
+[0;32mI (110915) dlna_upnp: SSDP recv 101 bytes from 192.168.100.101:48885: M-SEARCH * HTTP/1.1
+
+HOS[0m
+[0;32mI (110916) dlna_upnp: M-SEARCH ST='upnp:rootdevice'[0m
+
+[0;32mI (110919) dlna_upnp: LOCATION=http://192.168.66.71:80/description.xml[0m
+[0;32mI (110927) dlna_upnp: Responded to M-SEARCH (ST= upnp:rootdevice)[0m
+[0;32mI (110934) dlna_upnp: SSDP recv 101 bytes from 192.168.66.200:47232: M-SEARCH * HTTP/1.1
+
+HOS[0m
+[0;32mI (110943) dlna_upnp: M-SEARCH ST='upnp:rootdevice'[0m
+[0;32mI (110948) dlna_upnp: LOCATION=http://192.168.66.71:80/description.xml[0m
+[0;32mI (110956) dlna_upnp: Responded to M-SEARCH (ST= upnp:rootdevice)[0m
+
+[0;32mI (111838) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+
+[0;32mI (116855) dlna_upnp: SSDP recv 237 bytes from 192.168.66.1:1900: NOTIFY * HTTP/1.1
+
+HOST:[0m
+

@@ -1,27 +1,61 @@
-#include "dlna/dlna_stream.h"
+﻿#include "dlna/dlna_stream.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 
 #include "audio/audio_output.h"
 #include "dlna/dlna_renderer.h"
+/* dr_flac: single-file FLAC decoder (public domain). Implementation is
+ * compiled into this TU (a separate .c was not picked up by the build). */
+#define DR_FLAC_IMPLEMENTATION
+#define DR_FLAC_NO_STDIO
+#include "dr_flac.h"
 #include "minimp3.h"
+#include "codecs/libhelix-aac/aacdec.h"
+#include "codecs/libfaad2/include/neaacdec.h"
 
 static const char *TAG = "dlna_stream";
 
-/* ── M2 scope ──────────────────────────────────────────────────────────────
+/* TEMP DIAG: crash checkpoint. Survives a software restart (RTC fast mem),
+ * written by the stream task at each stage; read back after a panic-reboot
+ * via /api/audio/usb to learn which stage crashed. 0 = no stream started. */
+RTC_NOINIT_ATTR uint32_t g_crash_stage = 0;
+void dlna_cp(uint32_t s) { g_crash_stage = s; }
+uint32_t dlna_stream_get_crash_stage(void) { return g_crash_stage; }
+/* TEMP DIAG: report compile-time decoder struct size */
+uint32_t dlna_stream_get_dec_size(void) { return (uint32_t)sizeof(mp3dec_t); }
+uint32_t dlna_stream_get_scratch_size(void) {
+  /* scratch typedef is implementation-scoped in this build; report the
+   * decode_frame stack footprint we configured around (BSS scratch). */
+  return 0;
+}
+
+/* 鈹€鈹€ M2 scope 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
  * Transport: WAV/PCM passthrough + MP3 software decode (minimp3, single-file
  * public-domain decoder). FLAC/AAC land next; unknown formats are detected,
  * logged and the stream stops cleanly.
  */
 
-#define STREAM_TASK_STACK 8192
-#define STREAM_TASK_PRIO 8
+/* minimp3's mp3dec_decode_frame puts a ~16 KB mp3dec_scratch_t on the
+ * task stack (maindata 2.8 KB + grbuf 4.6 KB + syn filterbank 8.4 KB), plus
+ * the decode call chain. 8 KB overflowed silently and corrupted the decode
+ * state for 48 kHz / 320 kbps streams (no PCM frames produced). 32 KB gives
+ * ample headroom; the task is lazy-created at play time and its stack lives
+ * in PSRAM (CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y) 鈥?a 32 KB internal
+ * stack repeatedly failed to allocate once httpd/USB/FIFO were up.
+ * 32 KB of PSRAM stack was enough for decode (scratch is now BSS) but the
+ * HTTP read chain (esp_http_client_read -> transport -> lwIP recv) needs
+ * headroom; 48 KB with the read buffer on the PSRAM heap keeps it safe. */
+#define STREAM_TASK_STACK 98304
+/* Below httpd (prio 5) so the SOAP Play handler finishes sending its response
+ * before the (CPU-heavy, PSRAM-stack) stream task starts pulling HTTP. */
+#define STREAM_TASK_PRIO 3
 #define HTTP_BUF_SIZE 4096
 #define PCM_CHUNK_FRAMES 1024 /* ~23 ms at 44.1 kHz */
 #define HEADER_SNIFF 64
@@ -29,10 +63,113 @@ static const char *TAG = "dlna_stream";
 /* MP3 streaming state (minimp3) */
 #define MP3_IN_CAP 16384
 #define MP3_OUT_FRAMES 2304 /* two max MP3 frames, per channel */
-static uint8_t s_mp3_in[MP3_IN_CAP];
-static size_t s_mp3_in_len = 0;
+/* NOTE: s_mp3_dec (BSS) sits directly before s_mp3_in_len in BSS layout, and
+ * minimp3's decode_frame does a memset(dec, 0, sizeof(mp3dec_t)); if that size
+ * ever overruns by even a few bytes it silently zeroes the neighbouring
+ * s_mp3_in_len / s_mp3_in. The 1KB guard absorbs such overruns, and the large
+ * in/out buffers are kept in PSRAM so a decode overrun can never corrupt the
+ * decoder's own input state. */
 static mp3dec_t s_mp3_dec;
-static int16_t s_mp3_out[MP3_OUT_FRAMES * 2];
+/* TEMP DIAG: minimp3's decode_frame does memset(dec, 0, sizeof(mp3dec_t));
+ * on the target the emitted memset was observed with a ~22KB count while the
+ * object is 6668B (potential BSS overrun). Wrap the decoder in a padded
+ * container so any overrun lands in pad[] instead of neighbouring BSS. */
+typedef struct {
+  mp3dec_t dec;
+  uint8_t pad[16384];
+} mp3_dec_padded_t;
+static mp3_dec_padded_t s_mp3;
+#define s_mp3_dec (s_mp3.dec)
+static uint8_t s_mp3_guard[1024];
+static size_t s_mp3_in_len = 0;
+static uint8_t *s_mp3_in = NULL;   /* PSRAM, MP3_IN_CAP bytes */
+static int16_t *s_mp3_out = NULL;  /* PSRAM, MP3_OUT_FRAMES*2 samples */
+
+/* ── FLAC (dr_flac, pull-style with an onRead that blocks on HTTP) ─────────── */
+static drflac *s_flac = NULL;
+static uint8_t s_flac_in[8192];    /* input staging: sniffed bytes + HTTP chunks */
+static size_t s_flac_in_len = 0;
+static size_t s_flac_in_pos = 0;
+static volatile uint64_t s_flac_frames_total = 0; /* TEMP DIAG */
+static volatile uint64_t s_flac_read_calls = 0;   /* TEMP DIAG */
+static volatile int s_fmt_diag = -1;              /* TEMP DIAG: sniff result */
+static volatile int s_flac_open_rc = -1;          /* TEMP DIAG: flac open rc */
+
+/* ── AAC (libhelix-aac, feed-style ADTS) ───────────────────────────────────── */
+#define AAC_IN_CAP (16384)
+static uint8_t *s_aac_in = NULL; /* PSRAM staging: ADTS frames + partials */
+
+/* ── AAC (libhelix-aac, feed-style ADTS) ───────────────────────────────────── */
+/* helix_malloc/helix_free declared in utils/helix_memory.h. Use PSRAM so a
+ * big SBR state never squeezes the internal heap; fall back to malloc.
+ * TEMP DIAG: canaries around every helix allocation to catch out-of-bounds
+ * writes (48000 Hz ADTS crash hunt). */
+#define HELIX_CANARY 64
+typedef struct {
+  uint8_t *base;
+  int size;
+} canary_rec_t;
+static canary_rec_t s_canary[8];
+static int s_canary_n = 0;
+static volatile int s_canary_hit = -1; /* TEMP DIAG: RTC via dlna_cp(90+n) */
+static volatile int s_canary_phase = -1;
+
+void *helix_malloc(int size) {
+  uint8_t *p =
+      heap_caps_malloc((size_t)size + 2 * HELIX_CANARY,
+                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!p) {
+    p = malloc((size_t)size + 2 * HELIX_CANARY);
+  }
+  if (!p) {
+    return NULL;
+  }
+  memset(p, 0xAA, HELIX_CANARY);
+  memset(p + HELIX_CANARY + size, 0xAA, HELIX_CANARY);
+  if (s_canary_n < 8) {
+    s_canary[s_canary_n].base = p;
+    s_canary[s_canary_n].size = size;
+    s_canary_n++;
+  }
+  return p + HELIX_CANARY;
+}
+void helix_free(void *ptr) {
+  if (!ptr) return;
+  uint8_t *p = (uint8_t *)ptr - HELIX_CANARY;
+  heap_caps_free(p);
+}
+int aac_canary_check(void) {
+  /* returns index of smashed canary, or -1 */
+  for (int i = 0; i < s_canary_n; i++) {
+    for (int j = 0; j < HELIX_CANARY; j++) {
+      if (s_canary[i].base[j] != 0xAA) return i;
+      if (s_canary[i].base[HELIX_CANARY + s_canary[i].size + j] != 0xAA)
+        return i;
+    }
+  }
+  /* heap-buffer tail canaries: 200=mp3_out, 201=aac_in */
+  if (s_mp3_out) {
+    const uint8_t *t =
+        (const uint8_t *)s_mp3_out + MP3_OUT_FRAMES * 2 * sizeof(int16_t);
+    for (int j = 0; j < 64; j++)
+      if (t[j] != 0xBB) return 200;
+  }
+  if (s_aac_in) {
+    const uint8_t *t = (const uint8_t *)s_aac_in + AAC_IN_CAP;
+    for (int j = 0; j < 64; j++)
+      if (t[j] != 0xCC) return 201;
+  }
+  return -1;
+}
+
+#define AAC_IN_CAP (16384)
+static NeAACDecHandle s_faad = NULL;
+static bool s_faad_inited = false;
+static size_t s_aac_in_len = 0;
+static AACFrameInfo s_aac_info;
+static volatile uint64_t s_aac_frames_total = 0; /* TEMP DIAG */
+static volatile int s_aac_open_rc = -1;          /* TEMP DIAG */
+static volatile uint32_t s_aac_feed_calls = 0;   /* TEMP DIAG */
 
 typedef enum {
   CMD_PLAY = 0,
@@ -50,6 +187,11 @@ typedef struct {
 
 static QueueHandle_t s_cmd_q = NULL;
 static TaskHandle_t s_task = NULL;
+/* PSRAM-backed task stack: 32KB in internal RAM repeatedly failed to
+ * allocate (ESP_ERR_NO_MEM) once httpd/USB/FIFO are up, while a smaller
+ * internal stack overflows minimp3's ~16KB decode scratch. */
+static StaticTask_t s_stream_tcb;
+static StackType_t *s_stream_stack = NULL;
 
 static volatile bool s_active = false;   /* task is running a stream */
 static volatile bool s_paused = false;   /* task is paused (HTTP idle) */
@@ -60,13 +202,23 @@ static uint32_t s_bits = 16;
 
 /* Decoded-PCM accounting for position/duration (WAV mode). */
 static volatile uint64_t s_pcm_frames_played = 0;
+static volatile uint32_t s_dlna_feed_calls = 0; /* TEMP DIAG: feed_pcm invocations */
+static volatile int s_play_last_err = 0;        /* TEMP DIAG: last dlna_stream_play rc */
+static volatile uint32_t s_read_calls = 0;      /* TEMP DIAG: stream-loop reads */
+static volatile uint32_t s_mp3_diag = 0;        /* TEMP DIAG: mp3 decode probe */
+static volatile uint32_t s_mp3_diag2 = 0;       /* TEMP DIAG: mp3 feed probe */
+static volatile int s_http_status = 0;          /* TEMP DIAG: last HTTP status */
+static volatile int s_http_err = 0;             /* TEMP DIAG: last http open err */
+static volatile uint32_t s_mp3_frames_total = 0;/* TEMP DIAG: decoded MP3 frames */
+static volatile uint32_t s_mp3_feed_calls = 0;  /* TEMP DIAG: mp3_feed calls */
+static volatile int s_stream_end = 0;           /* TEMP DIAG: why stream loop exited */
 static volatile uint64_t s_pcm_frames_total = 0;
 static volatile double s_duration = 0.0;
 static double s_seek_target = 0.0; /* WAV: drop frames until this time */
 
 static int16_t *s_pcm_buf = NULL;
 
-/* ── format sniffing ─────────────────────────────────────────────────────── */
+/* 鈹€鈹€ format sniffing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 typedef enum {
   FMT_WAV = 0,
@@ -83,6 +235,9 @@ static stream_format_t sniff_format(const uint8_t *h, size_t n) {
   if (n >= 4 && memcmp(h, "fLaC", 4) == 0) {
     return FMT_FLAC;
   }
+  if (n >= 2 && h[0] == 0xFF && (h[1] & 0xF6) == 0xF0) {
+    return FMT_AAC; /* ADTS AAC: 12-bit sync 0xFFF */
+  }
   if (n >= 4 && memcmp(h, "ID3", 3) == 0) {
     return FMT_MP3;
   }
@@ -95,7 +250,7 @@ static stream_format_t sniff_format(const uint8_t *h, size_t n) {
   return FMT_UNKNOWN;
 }
 
-/* ── WAV parsing ─────────────────────────────────────────────────────────── */
+/* 鈹€鈹€ WAV parsing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 typedef struct {
   bool have_fmt;
@@ -254,9 +409,10 @@ static int wav_consume(wav_ctx_t *ctx, const uint8_t *buf, size_t len,
   return 0;
 }
 
-/* ── HTTP stream task ────────────────────────────────────────────────────── */
+/* 鈹€鈹€ HTTP stream task 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 static void feed_pcm(int16_t *pcm, size_t frames) {
+  s_dlna_feed_calls++;
   /* Seek: drop frames until the target position. */
   if (s_seek_target > 0.0) {
     double frame_time = 1.0 / (double)s_rate;
@@ -282,9 +438,185 @@ static void feed_pcm(int16_t *pcm, size_t frames) {
   s_pcm_frames_played += frames;
 }
 
+/* ── FLAC helpers ─────────────────────────────────────────────────────────── */
+
+/* dr_flac pull callback: serve staged bytes first, then block-read HTTP.
+ * pUserData is the http client handle. s_flac_in holds the sniffed prefix
+ * plus every chunk fetched from the wire, consumed as dr_flac asks. */
+static size_t flac_on_read(void *pUserData, void *pBufferOut,
+                           size_t bytesToRead) {
+  esp_http_client_handle_t hc = (esp_http_client_handle_t)pUserData;
+  uint8_t *out = (uint8_t *)pBufferOut;
+  size_t got = 0;
+  while (got < bytesToRead) {
+    if (s_flac_in_pos < s_flac_in_len) {
+      size_t take = s_flac_in_len - s_flac_in_pos;
+      if (take > bytesToRead - got) {
+        take = bytesToRead - got;
+      }
+      memcpy(out + got, s_flac_in + s_flac_in_pos, take);
+      s_flac_in_pos += take;
+      got += take;
+    } else {
+      if (!hc) {
+        break;
+      }
+      int n = esp_http_client_read(hc, (char *)s_flac_in, sizeof(s_flac_in));
+      s_flac_read_calls++;
+      if (n <= 0) {
+        break; /* HTTP EOF */
+      }
+      s_flac_in_len = (size_t)n;
+      s_flac_in_pos = 0;
+    }
+  }
+  return got;
+}
+
+/* drflac_open requires a non-NULL seek callback even though streaming
+ * cannot seek: return DRFLAC_FALSE ("seek unsupported"). */
+static drflac_bool32 flac_on_seek(void *pUserData, int offset,
+                                  drflac_seek_origin origin) {
+  (void)pUserData;
+  (void)offset;
+  (void)origin;
+  return DRFLAC_FALSE;
+}
+
+static void flac_stop(void) {
+  if (s_flac) {
+    drflac_close(s_flac);
+    s_flac = NULL;
+  }
+  s_flac_in_len = 0;
+  s_flac_in_pos = 0;
+}
+
+/* Decode as much FLAC as the wire provides; returns false at EOF/error. */
+static bool flac_pump(esp_http_client_handle_t hc) {
+  drflac_uint64 n = drflac_read_pcm_frames_s16(
+      s_flac, PCM_CHUNK_FRAMES, (drflac_int16 *)s_pcm_buf);
+  if (n > 0) {
+    s_flac_frames_total += n;
+    feed_pcm(s_pcm_buf, (size_t)n);
+    return true;
+  }
+  ESP_LOGI(TAG, "FLAC end (read=0)");
+  return false;
+}
+
+/* ── AAC (libhelix-aac, feed-style) ────────────────────────────────────────── */
+
+static void aac_stop(void) {
+  if (s_faad) {
+    NeAACDecClose(s_faad);
+    s_faad = NULL;
+  }
+  s_faad_inited = false;
+  s_aac_in_len = 0;
+}
+
+/* Feed a raw HTTP chunk; parse ADTS framing ourselves and hand helix only
+ * complete frames (it does not tolerate partial frames and will garbage-
+ * decode them, which can walk out of bounds). s_mp3_out is reused as the
+ * PCM sink (4608 int16 > 2048 frames * 2ch). */
+static size_t aac_feed(const uint8_t *buf, size_t len) {
+  if (s_aac_in_len + len > AAC_IN_CAP) {
+    /* keep the newest bytes (drop the oldest partial data) */
+    size_t keep = AAC_IN_CAP - len;
+    if (s_aac_in_len > keep) {
+      memmove(s_aac_in, s_aac_in + (s_aac_in_len - keep), keep);
+      s_aac_in_len = keep;
+    }
+  }
+  memcpy(s_aac_in + s_aac_in_len, buf, len);
+  s_aac_in_len += len;
+
+  size_t fed = 0;
+  while (s_aac_in_len >= 7) {
+    /* validate ADTS sync, else drop bytes up to the next sync word */
+    if (s_aac_in[0] != 0xFF || (s_aac_in[1] & 0xF6) != 0xF0) {
+      int sync = AACFindSyncWord(s_aac_in, (int)s_aac_in_len);
+      if (sync <= 0) {
+        s_aac_in_len = 0;
+        break;
+      }
+      memmove(s_aac_in, s_aac_in + sync, s_aac_in_len - (size_t)sync);
+      s_aac_in_len -= (size_t)sync;
+      continue;
+    }
+    int flen = ((s_aac_in[3] & 0x03) << 11) | (s_aac_in[4] << 3) |
+               (s_aac_in[5] >> 5);
+    if (flen < 7) {
+      s_aac_in_len = 0;
+      break;
+    }
+    if ((int)s_aac_in_len < flen) {
+      break; /* wait for the rest of this frame */
+    }
+
+    dlna_cp(11); /* before faad decode */
+    if (!s_faad_inited) {
+      unsigned long f_rate = 0;
+      unsigned char f_ch = 0;
+      long irc = NeAACDecInit(s_faad, s_aac_in, (unsigned long)s_aac_in_len,
+                              &f_rate, &f_ch);
+      s_faad_inited = true;
+      s_aac_open_rc = (irc < 0) ? -1 : 1;
+      if (irc < 0) {
+        ESP_LOGE(TAG, "faad init rc=%ld (drop frame)", irc);
+      } else {
+        if (f_rate > 0) s_rate = f_rate;
+        if (f_ch > 0) s_channels = f_ch;
+        ESP_LOGI(TAG, "faad init: %lu Hz %u ch obj=%ld", f_rate, f_ch, irc);
+      }
+    }
+    {
+      NeAACDecFrameInfo fi;
+      size_t consumed;
+      memset(&fi, 0, sizeof(fi));
+      void *pcm = NeAACDecDecode(s_faad, &fi, s_aac_in, (unsigned long)flen);
+      dlna_cp(12); /* after faad decode */
+      consumed = fi.bytesconsumed > 0 ? (size_t)fi.bytesconsumed
+                                      : (size_t)flen;
+      if (fi.error > 0) {
+        ESP_LOGI(TAG, "faad err=%u consumed=%lu", (unsigned)fi.error,
+                 (unsigned long)consumed);
+      } else {
+        uint32_t ch = fi.channels > 0 ? (uint32_t)fi.channels : 2;
+        uint32_t total = (uint32_t)fi.samples; /* interleaved total */
+        uint32_t frames = ch > 0 ? total / ch : 0;
+        if (frames > 0 && pcm) {
+          if (fi.samplerate > 0) s_rate = fi.samplerate;
+          s_channels = ch;
+          dlna_cp(14); /* before feed_pcm */
+          feed_pcm((const int16_t *)pcm, frames);
+          dlna_cp(15); /* after feed_pcm */
+          s_aac_frames_total += frames;
+          fed += frames;
+        }
+      }
+      s_aac_feed_calls++;
+      dlna_cp(16); /* before consume */
+      if (consumed < (size_t)flen) {
+        consumed = (size_t)flen;
+      }
+      if (consumed >= s_aac_in_len) {
+        s_aac_in_len = 0;
+        break;
+      }
+      memmove(s_aac_in, s_aac_in + consumed, s_aac_in_len - consumed);
+      s_aac_in_len -= consumed;
+    }
+  }
+  return fed;
+}
+
 /* Feed HTTP bytes into the MP3 decoder; decode and feed as many frames as
  * the input allows. Returns frames fed (0 = need more input). */
 static size_t mp3_feed(const uint8_t *buf, size_t len) {
+  s_mp3_feed_calls++;
+  dlna_cp(20); /* mp3_feed entry */
   if (s_mp3_in_len + len > MP3_IN_CAP) {
     /* Keep the newest bytes, drop the oldest (should not happen once frames
      * are consumed, but protects against a pathological header stream). */
@@ -295,13 +627,30 @@ static size_t mp3_feed(const uint8_t *buf, size_t len) {
   }
   memcpy(s_mp3_in + s_mp3_in_len, buf, len);
   s_mp3_in_len += len;
+  dlna_cp(21); /* input buffered */
+  if ((s_mp3_diag2++ % 25) == 0) {
+    ESP_LOGI(TAG, "feed: len=%u in=%u b0=%02X%02X%02X%02X %02X%02X%02X%02X",
+             (unsigned)len, (unsigned)s_mp3_in_len, s_mp3_in[0],
+             s_mp3_in[1], s_mp3_in[2], s_mp3_in[3], s_mp3_in[4],
+             s_mp3_in[5], s_mp3_in[6], s_mp3_in[7]);
+  }
 
   size_t fed = 0;
   while (s_mp3_in_len > 0) {
     mp3dec_frame_info_t info;
     memset(&info, 0, sizeof(info));
+    dlna_cp(22); /* before decode_frame */
     int n = mp3dec_decode_frame(&s_mp3_dec, s_mp3_in, (int)s_mp3_in_len,
                                 s_mp3_out, &info);
+    dlna_cp(23); /* after decode_frame */
+    if ((s_mp3_diag++ % 25) == 0) {
+      ESP_LOGI(TAG,
+               "mp3dec: n=%d off=%d fb=%d in=%d "
+               "b0=%02X%02X%02X%02X %02X%02X%02X%02X",
+               n, info.frame_offset, info.frame_bytes, (int)s_mp3_in_len,
+               s_mp3_in[0], s_mp3_in[1], s_mp3_in[2], s_mp3_in[3],
+               s_mp3_in[4], s_mp3_in[5], s_mp3_in[6], s_mp3_in[7]);
+    }
     if (n <= 0) {
       size_t skip = (size_t)info.frame_offset;
       if (skip > 0) {
@@ -323,8 +672,11 @@ static size_t mp3_feed(const uint8_t *buf, size_t len) {
       s_channels = (uint32_t)info.channels;
     }
     size_t frames = (size_t)n;
+    dlna_cp(24); /* before feed_pcm */
     feed_pcm(s_mp3_out, frames);
+    dlna_cp(25); /* after feed_pcm */
     fed += frames;
+    s_mp3_frames_total += frames;
     size_t consumed = info.frame_offset > 0 ? (size_t)info.frame_offset
                                              : (size_t)info.frame_bytes;
     if (consumed == 0 || consumed > s_mp3_in_len) {
@@ -359,10 +711,41 @@ static void stream_task(void *arg) {
     vTaskDelete(NULL);
     return;
   }
+  /* MP3 decode buffers live in PSRAM so a decode overrun can never corrupt
+   * BSS neighbours (s_mp3_in_len etc). Allocated once for the task lifetime.
+   * TEMP DIAG: 64-byte tail canaries on out/aac buffers to catch overruns. */
+  if (!s_mp3_in) {
+    s_mp3_in = heap_caps_malloc(MP3_IN_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+  if (!s_mp3_out) {
+    s_mp3_out = heap_caps_malloc(MP3_OUT_FRAMES * 2 * sizeof(int16_t) + 64,
+                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    memset((uint8_t *)s_mp3_out + MP3_OUT_FRAMES * 2 * sizeof(int16_t), 0xBB,
+           64);
+  }
+  if (!s_aac_in) {
+    s_aac_in = heap_caps_malloc(AAC_IN_CAP + 64,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    memset((uint8_t *)s_aac_in + AAC_IN_CAP, 0xCC, 64);
+  }
+  /* HTTP read buffer on PSRAM heap instead of the 32KB task stack; the
+   * esp_http_client_read chain (transport->LWIP recv) adds several KB of
+   * frames on top of the 4KB buffer. */
+  uint8_t *s_http_buf = heap_caps_malloc(HTTP_BUF_SIZE,
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!s_mp3_in || !s_mp3_out || !s_aac_in || !s_http_buf) {
+    ESP_LOGE(TAG, "buf alloc failed in=%p out=%p aac=%p http=%p",
+             (void *)s_mp3_in, (void *)s_mp3_out, (void *)s_aac_in,
+             (void *)s_http_buf);
+    s_active = false;
+    vTaskDelete(NULL);
+    return;
+  }
 
   while (xQueueReceive(s_cmd_q, &msg, portMAX_DELAY)) {
     switch (msg.cmd) {
     case CMD_PLAY: {
+      dlna_cp(35); /* CMD_PLAY received */
       if (client) {
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
@@ -394,6 +777,8 @@ static void stream_task(void *arg) {
         continue;
       }
       esp_err_t err = esp_http_client_open(client, 0);
+      s_http_err = (int)err;
+      dlna_cp(1); /* http open attempted */
       if (err != ESP_OK) {
         ESP_LOGE(TAG, "http open failed (%s): %s", esp_err_to_name(err),
                  s_uri);
@@ -403,12 +788,15 @@ static void stream_task(void *arg) {
         continue;
       }
       int status = esp_http_client_fetch_headers(client);
+      s_http_status = status;
+      dlna_cp(2); /* headers fetched */
       ESP_LOGI(TAG, "HTTP %d, content-length=%d", status,
                esp_http_client_get_content_length(client));
 
       /* Sniff the first bytes for format detection. */
       uint8_t sniff[HEADER_SNIFF];
       int got = esp_http_client_read(client, (char *)sniff, sizeof(sniff));
+      dlna_cp(3); /* sniff read done */
       if (got <= 0) {
         ESP_LOGW(TAG, "no data from stream");
         esp_http_client_close(client);
@@ -418,12 +806,15 @@ static void stream_task(void *arg) {
         continue;
       }
       fmt = sniff_format(sniff, (size_t)got);
+      s_fmt_diag = (int)fmt;
+      dlna_cp(4); /* format detected */
       ESP_LOGI(TAG, "stream format: %s",
                fmt == FMT_WAV ? "WAV" : fmt == FMT_MP3 ? "MP3"
                : fmt == FMT_AAC ? "AAC" : fmt == FMT_FLAC ? "FLAC"
                                                           : "UNKNOWN");
-      if (fmt != FMT_WAV && fmt != FMT_MP3) {
-        ESP_LOGE(TAG, "format not supported yet (M2 stage 2 = WAV + MP3)");
+      if (fmt != FMT_WAV && fmt != FMT_MP3 && fmt != FMT_FLAC &&
+          fmt != FMT_AAC) {
+        ESP_LOGE(TAG, "format not supported yet (WAV/MP3/FLAC/AAC)");
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         client = NULL;
@@ -433,8 +824,70 @@ static void stream_task(void *arg) {
 
       if (fmt == FMT_MP3) {
         mp3dec_init(&s_mp3_dec);
-        s_mp3_in_len = 0;
-        mp3_feed(sniff, (size_t)got);
+        /* Keep sniffed bytes as a prefix; do NOT decode them yet (the first
+         * decode_frame on the 64-byte sniff input was a panic source). The
+         * main read loop will decode once enough real frames are buffered. */
+        memcpy(s_mp3_in, sniff, (size_t)got);
+        s_mp3_in_len = (size_t)got;
+        dlna_cp(5); /* mp3 init done */
+      } else if (fmt == FMT_FLAC) {
+        /* Stage the sniffed bytes, then let drflac_open pull the header
+         * (and more) through flac_on_read -> HTTP. */
+        flac_stop();
+        s_flac_in_len = (size_t)got;
+        s_flac_in_pos = 0;
+        memcpy(s_flac_in, sniff, (size_t)got);
+        s_flac_frames_total = 0;
+        s_flac_read_calls = 0;
+        s_flac = drflac_open(flac_on_read, flac_on_seek, NULL, client, NULL);
+        s_flac_open_rc = s_flac ? 1 : 0;
+        if (!s_flac) {
+          ESP_LOGE(TAG, "FLAC open failed");
+          esp_http_client_close(client);
+          esp_http_client_cleanup(client);
+          client = NULL;
+          s_active = false;
+          continue;
+        }
+        s_rate = (uint32_t)s_flac->sampleRate;
+        s_channels = (uint32_t)s_flac->channels;
+        s_bits = 16;
+        ESP_LOGI(TAG, "FLAC opened: %u Hz %u ch", s_rate, s_channels);
+        dlna_cp(9); /* flac opened */
+      } else if (fmt == FMT_AAC) {
+        aac_stop();
+        ESP_LOGI(TAG, "AAC: faad open (heap=%lu)",
+                 (unsigned long)esp_get_free_heap_size());
+        s_faad = NeAACDecOpen();
+        if (!s_faad) {
+          ESP_LOGE(TAG, "faad open failed (no memory)");
+          esp_http_client_close(client);
+          esp_http_client_cleanup(client);
+          client = NULL;
+          s_active = false;
+          continue;
+        }
+        {
+          NeAACDecConfigurationPtr cfg =
+              NeAACDecGetCurrentConfiguration(s_faad);
+          cfg->defObjectType = LC;
+          cfg->defSampleRate = 44100;
+          cfg->outputFormat = FAAD_FMT_16BIT;
+          cfg->downMatrix = 0;
+          cfg->dontUpSampleImplicitSBR = 1;
+          NeAACDecSetConfiguration(s_faad, cfg);
+        }
+        s_aac_open_rc = 1;
+        s_faad_inited = false;
+        memset(&s_aac_info, 0, sizeof(s_aac_info));
+        s_aac_in_len = 0;
+        s_aac_frames_total = 0;
+        s_aac_feed_calls = 0;
+        ESP_LOGI(TAG, "AAC (faad2) ready (heap=%lu)",
+                 (unsigned long)esp_get_free_heap_size());
+        dlna_cp(10); /* aac init done */
+        /* Feed the sniffed bytes; they may already contain a frame start. */
+        aac_feed(sniff, (size_t)got);
       } else {
         /* First chunk into the WAV parser. */
         size_t frames = 0;
@@ -480,6 +933,8 @@ static void stream_task(void *arg) {
         esp_http_client_cleanup(client);
         client = NULL;
       }
+      flac_stop();
+      aac_stop();
       in_stream = false;
       s_active = false;
       s_paused = false;
@@ -501,16 +956,30 @@ static void stream_task(void *arg) {
       if (uxQueueMessagesWaiting(s_cmd_q) > 0) {
         break; /* handle pending command */
       }
-      uint8_t buf[HTTP_BUF_SIZE];
-      int n = esp_http_client_read(client, (char *)buf, sizeof(buf));
+      if (fmt == FMT_FLAC) {
+        /* dr_flac drives the wire: its onRead pulls HTTP directly. */
+        if (!flac_pump(client)) {
+          break;
+        }
+        if ((s_read_calls++ % 100) == 0) {
+          ESP_LOGI(TAG, "flac: frames=%llu",
+                   (unsigned long long)s_flac_frames_total);
+        }
+        continue;
+      }
+      int n = esp_http_client_read(client, (char *)s_http_buf, HTTP_BUF_SIZE);
       if (n <= 0) {
         ESP_LOGI(TAG, "stream ended (read=%d)", n);
         break;
       }
       if (fmt == FMT_WAV) {
         size_t frames = 0;
-        int r = wav_consume(&wav, buf, (size_t)n, s_pcm_buf,
+        int r = wav_consume(&wav, s_http_buf, (size_t)n, s_pcm_buf,
                             PCM_CHUNK_FRAMES * 2, &frames);
+        if ((s_read_calls++ % 100) == 0) {
+          ESP_LOGI(TAG, "wav: n=%d r=%d frames=%u", n, r,
+                   (unsigned)frames);
+        }
         if (r < 0) {
           ESP_LOGE(TAG, "WAV parse error");
           break;
@@ -519,9 +988,24 @@ static void stream_task(void *arg) {
           feed_pcm(s_pcm_buf, frames);
         }
       } else if (fmt == FMT_MP3) {
-        mp3_feed(buf, (size_t)n);
+        size_t f = mp3_feed(s_http_buf, (size_t)n);
+        (void)f;
+        dlna_cp(8); /* mp3_feed returned */
+        if ((s_read_calls++ % 100) == 0) {
+          ESP_LOGI(TAG, "mp3: n=%d fed=%u", n, (unsigned)f);
+        }
+      } else if (fmt == FMT_AAC) {
+        size_t f = aac_feed(s_http_buf, (size_t)n);
+        (void)f;
+        if ((s_read_calls++ % 100) == 0) {
+          ESP_LOGI(TAG, "aac: n=%d fed=%u", n, (unsigned)f);
+        }
       }
     }
+    s_stream_end = 1;
+
+    flac_stop();
+    aac_stop();
 
     if (!in_stream && client) {
       esp_http_client_close(client);
@@ -536,7 +1020,7 @@ static void stream_task(void *arg) {
   vTaskDelete(NULL);
 }
 
-/* ── public API ──────────────────────────────────────────────────────────── */
+/* 鈹€鈹€ public API 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 esp_err_t dlna_stream_init(void) {
   if (s_cmd_q) {
@@ -557,32 +1041,57 @@ static esp_err_t ensure_stream_task(void) {
   if (s_task) {
     return ESP_OK;
   }
-  BaseType_t ok = xTaskCreatePinnedToCore(stream_task, "dlna_stream",
-                                          STREAM_TASK_STACK, NULL,
-                                          STREAM_TASK_PRIO, &s_task, 0);
-  if (ok != pdPASS) {
+  if (!s_stream_stack) {
+    s_stream_stack =
+        heap_caps_malloc(STREAM_TASK_STACK * sizeof(StackType_t),
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_stream_stack) {
+      ESP_LOGE(TAG, "PSRAM stream stack alloc failed (%u bytes)",
+               (unsigned)(STREAM_TASK_STACK * sizeof(StackType_t)));
+      return ESP_ERR_NO_MEM;
+    }
+  }
+  s_task = xTaskCreateStaticPinnedToCore(
+      stream_task, "dlna_stream", STREAM_TASK_STACK, NULL, STREAM_TASK_PRIO,
+      s_stream_stack, &s_stream_tcb, 0);
+  if (!s_task) {
+    ESP_LOGE(TAG, "stream task static create FAILED");
     return ESP_ERR_NO_MEM;
   }
-  ESP_LOGI(TAG, "DLNA stream task started (lazy)");
+  ESP_LOGI(TAG, "DLNA stream task started (lazy, PSRAM stack)");
   return ESP_OK;
 }
 
 esp_err_t dlna_stream_play(const char *uri) {
+  dlna_cp(33); /* stream_play entry */
   if (!uri || !uri[0]) {
+    s_play_last_err = ESP_ERR_INVALID_ARG;
     return ESP_ERR_INVALID_ARG;
   }
   esp_err_t err = ensure_stream_task();
   if (err != ESP_OK) {
+    s_play_last_err = err;
     return err;
   }
+  dlna_cp(34); /* task ensured */
   stream_msg_t msg;
   memset(&msg, 0, sizeof(msg));
   msg.cmd = CMD_PLAY;
   snprintf(msg.uri, sizeof(msg.uri), "%s", uri);
   if (xQueueSend(s_cmd_q, &msg, pdMS_TO_TICKS(200)) != pdPASS) {
+    s_play_last_err = ESP_ERR_TIMEOUT;
     return ESP_ERR_TIMEOUT;
   }
+  s_play_last_err = ESP_OK;
   return ESP_OK;
+}
+
+/* TEMP DIAG */
+int dlna_stream_get_last_err(void) {
+  return s_play_last_err;
+}
+bool dlna_stream_task_alive(void) {
+  return s_task != NULL;
 }
 
 void dlna_stream_pause(void) {
@@ -608,8 +1117,7 @@ void dlna_stream_seek(double seconds) {
 double dlna_stream_get_position(void) {
   if (!s_active) {
     return 0.0;
-  }
-  double bytes_per_sec =
+  }  double bytes_per_sec =
       (double)s_rate * s_channels * (double)(s_bits / 8);
   if (bytes_per_sec <= 0) {
     return 0.0;
@@ -625,3 +1133,21 @@ double dlna_stream_get_duration(void) {
 bool dlna_stream_is_playing(void) {
   return s_active && !s_paused;
 }
+
+uint32_t dlna_stream_get_feed_count(void) { /* TEMP DIAG */
+  return s_dlna_feed_calls;
+}
+
+/* TEMP DIAG */
+int dlna_stream_get_http_status(void) { return s_http_status; }
+int dlna_stream_get_http_err(void) { return s_http_err; }
+uint32_t dlna_stream_get_mp3_frames(void) { return s_mp3_frames_total; }
+uint32_t dlna_stream_get_mp3_feed_calls(void) { return s_mp3_feed_calls; }
+uint64_t dlna_stream_get_flac_frames(void) { return s_flac_frames_total; }
+uint64_t dlna_stream_get_flac_read_calls(void) { return s_flac_read_calls; }
+int dlna_stream_get_fmt_diag(void) { return s_fmt_diag; }
+int dlna_stream_get_flac_open_rc(void) { return s_flac_open_rc; }
+uint64_t dlna_stream_get_aac_frames(void) { return s_aac_frames_total; }
+int dlna_stream_get_aac_open_rc(void) { return s_aac_open_rc; }
+uint32_t dlna_stream_get_aac_feed_calls(void) { return s_aac_feed_calls; }
+int dlna_stream_get_stream_end(void) { return s_stream_end; }

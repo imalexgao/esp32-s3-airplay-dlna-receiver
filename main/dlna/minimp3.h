@@ -8,6 +8,11 @@
 */
 #include <stdint.h>
 
+/* XXX local change: crash-checkpoint hook used by the ESP32 DLNA stream task
+ * (dlna_stream.c). Declared extern here so decode_frame can report where it
+ * panics; no-op on other platforms (link against a stub). */
+extern void dlna_cp(uint32_t s);
+
 #define MINIMP3_MAX_SAMPLES_PER_FRAME (1152*2)
 
 typedef struct
@@ -1715,7 +1720,10 @@ int mp3dec_decode_frame(mp3dec_t *dec, const uint8_t *mp3, int mp3_bytes, mp3d_s
     int i = 0, igr, frame_size = 0, success = 1;
     const uint8_t *hdr;
     bs_t bs_frame[1];
-    mp3dec_scratch_t scratch;
+    /* XXX local change: scratch is ~21KB; on ESP32-S3 a 32KB PSRAM-backed
+     * stream-task stack overflowed during L3 decoding (Guru Meditation ->
+     * reboot). Static (BSS) keeps it off the stack; single-instance use. */
+    static mp3dec_scratch_t scratch;
 
     if (mp3_bytes > 4 && dec->header[0] == 0xff && hdr_compare(dec->header, mp3))
     {
@@ -1727,8 +1735,11 @@ int mp3dec_decode_frame(mp3dec_t *dec, const uint8_t *mp3, int mp3_bytes, mp3d_s
     }
     if (!frame_size)
     {
+        dlna_cp(30); /* memset dec */
         memset(dec, 0, sizeof(mp3dec_t));
+        dlna_cp(31); /* find_frame */
         i = mp3d_find_frame(mp3, mp3_bytes, &dec->free_format_bytes, &frame_size);
+        dlna_cp(32); /* find_frame returned */
         if (!frame_size || i + frame_size > mp3_bytes)
         {
             info->frame_bytes = i;
@@ -1758,23 +1769,30 @@ int mp3dec_decode_frame(mp3dec_t *dec, const uint8_t *mp3, int mp3_bytes, mp3d_s
 
     if (info->layer == 3)
     {
+        dlna_cp(33); /* before L3_read_side_info */
         int main_data_begin = L3_read_side_info(bs_frame, scratch.gr_info, hdr);
+        dlna_cp(34); /* after side info */
         if (main_data_begin < 0 || bs_frame->pos > bs_frame->limit)
         {
             mp3dec_init(dec);
             return 0;
         }
         success = L3_restore_reservoir(dec, bs_frame, &scratch, main_data_begin);
+        dlna_cp(35); /* after restore reservoir */
         if (success)
         {
             for (igr = 0; igr < (HDR_TEST_MPEG1(hdr) ? 2 : 1); igr++, pcm += 576*info->channels)
             {
+                dlna_cp(36); /* before L3_decode */
                 memset(scratch.grbuf[0], 0, 576*2*sizeof(float));
                 L3_decode(dec, &scratch, scratch.gr_info + igr*info->channels, info->channels);
+                dlna_cp(37); /* after L3_decode */
                 mp3d_synth_granule(dec->qmf_state, scratch.grbuf[0], 18, info->channels, pcm, scratch.syn[0]);
+                dlna_cp(38); /* after synth */
             }
         }
         L3_save_reservoir(dec, &scratch);
+        dlna_cp(39); /* after save reservoir */
     } else
     {
 #ifdef MINIMP3_ONLY_MP3

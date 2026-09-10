@@ -21,6 +21,17 @@ static char s_metadata[DLNA_META_MAX] = {0};
 static double s_pos_base = 0.0;   /* position at the last transition */
 static int64_t s_play_start_us = 0; /* esp_timer time when PLAY began */
 
+/* TEMP DIAG */
+static volatile uint32_t s_seturi_calls = 0;
+static volatile uint32_t s_play_calls = 0;
+static volatile uint32_t s_stream_play_calls = 0;
+static volatile uint32_t s_uri_len = 0;
+
+uint32_t dlna_renderer_get_seturi_calls(void) { return s_seturi_calls; }
+uint32_t dlna_renderer_get_play_calls(void) { return s_play_calls; }
+uint32_t dlna_renderer_get_stream_play_calls(void) { return s_stream_play_calls; }
+uint32_t dlna_renderer_get_uri_len(void) { return s_uri_len; }
+
 esp_err_t dlna_renderer_init(void) {
   s_state = DLNA_STATE_STOPPED;
   ESP_LOGI(TAG, "DLNA renderer initialized (state=STOPPED)");
@@ -40,11 +51,13 @@ static double clock_now(void) {
 }
 
 void dlna_renderer_set_uri(const char *uri, const char *metadata) {
+  s_seturi_calls++;
   if (uri && uri[0]) {
     snprintf(s_uri, sizeof(s_uri), "%s", uri);
   } else {
     s_uri[0] = '\0';
   }
+  s_uri_len = strlen(s_uri);
   if (metadata && metadata[0]) {
     snprintf(s_metadata, sizeof(s_metadata), "%s", metadata);
   } else {
@@ -57,17 +70,22 @@ void dlna_renderer_set_uri(const char *uri, const char *metadata) {
 }
 
 void dlna_renderer_play(void) {
+  s_play_calls++;
+  dlna_cp(30); /* play entry */
   bool was_paused = (s_state == DLNA_STATE_PAUSED);
   s_pos_base = clock_now();
   clock_start();
   s_state = DLNA_STATE_PLAYING;
   /* Last-writer-wins: DLNA now owns the output. */
   source_arbiter_activate_dlna();
+  dlna_cp(31); /* arbiter done */
   if (s_uri[0]) {
     if (was_paused) {
       dlna_stream_resume();
     } else {
       dlna_stream_play(s_uri);
+      s_stream_play_calls++;
+      dlna_cp(32); /* stream play returned */
     }
   }
   ESP_LOGI(TAG, "DLNA PLAY (source arbiter: dlna active)");

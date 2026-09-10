@@ -148,6 +148,8 @@
 static usb_host_client_handle_t s_client = NULL;
 static usb_device_handle_t s_dev = NULL;
 static volatile bool s_streaming = false;
+static volatile uint32_t s_usb_feed_calls = 0; /* TEMP DIAG */
+static volatile uint32_t s_usb_feed_skips = 0; /* TEMP DIAG: dropped, !s_streaming */
 /* Resampler rebuild request. Only the playback task may call
  * audio_resample_init/reset once it is running — see playback_task(). */
 static volatile bool resample_reinit_needed = false;
@@ -2202,29 +2204,36 @@ static void playback_task(void *arg) {
  */
 esp_err_t audio_output_usb_host_feed_pcm(const int16_t *pcm, size_t samples,
                                          uint32_t rate) {
+  extern void dlna_cp(unsigned int); /* TEMP DIAG */
+  dlna_cp(17); /* feed_pcm entry */
   static int16_t *s_feed_rbuf = NULL; /* resampler output scratch */
   static uint8_t *s_feed_conv = NULL; /* >16-bit device format scratch */
   static uint32_t s_feed_rate = 0;
+  s_usb_feed_calls++; /* TEMP DIAG */
 
   if (!pcm || samples == 0) {
     return ESP_OK;
   }
   if (!s_feed_rbuf) {
-    s_feed_rbuf = malloc((size_t)MAX_RESAMPLE_FRAMES * 2 * sizeof(int16_t));
+    /* Sized for a full decode frame (1024 stereo frames) on the direct path
+     * plus the resampler path (which chunks to MAX_RESAMPLE_FRAMES). */
+    s_feed_rbuf = malloc((size_t)2048 * 2 * sizeof(int16_t));
     if (!s_feed_rbuf) {
       return ESP_ERR_NO_MEM;
     }
   }
   if (!s_feed_conv) {
-    s_feed_conv = malloc((size_t)MAX_RESAMPLE_FRAMES * 2 * 4);
+    s_feed_conv = malloc((size_t)2048 * 2 * 4);
     if (!s_feed_conv) {
       return ESP_ERR_NO_MEM;
     }
   }
   if (!s_streaming) {
+    s_usb_feed_skips++; /* TEMP DIAG */
     return ESP_OK; /* no device attached; drop (standby) */
   }
 
+  dlna_cp(18); /* before resample init */
   if (rate > 0 && rate != s_feed_rate) {
     audio_resample_init(rate, s_out_rate, 2);
     s_feed_rate = rate;
@@ -2233,24 +2242,49 @@ esp_err_t audio_output_usb_host_feed_pcm(const int16_t *pcm, size_t samples,
   int16_t *play_buf = (int16_t *)pcm;
   size_t play_samples = samples;
   if (audio_resample_is_active()) {
+    dlna_cp(19); /* resampling */
     play_samples = audio_resample_process(pcm, samples, s_feed_rbuf,
                                           MAX_RESAMPLE_FRAMES);
+    play_buf = s_feed_rbuf;
+  } else {
+    /* Direct path (source rate == device rate): copy into our own scratch
+     * before the downstream passes write to it. Decoders (FAAD2, minimp3,
+     * dr_flac) return pointers into their own internal buffers whose size is
+     * not guaranteed to survive apply_volume/apply_channel_mode writing a
+     * full frame, and the resampler path never had this problem because it
+     * already copies into s_feed_rbuf. */
+    if (play_samples > 2048) {
+      play_samples = 2048;
+    }
+    memcpy(s_feed_rbuf, pcm, play_samples * 2 * sizeof(int16_t));
     play_buf = s_feed_rbuf;
   }
   if (play_samples == 0) {
     return ESP_OK;
   }
 
+  dlna_cp(20); /* before led */
   led_audio_feed(play_buf, play_samples);
+  dlna_cp(21); /* after led, before volume */
   apply_volume(play_buf, play_samples * 2);
+  dlna_cp(22); /* after volume, before channel */
   apply_channel_mode(play_buf, play_samples);
-
+  dlna_cp(23); /* before fifo */
   if (s_frame_bytes == 4) {
     fifo_push((const uint8_t *)play_buf, play_samples * 4);
   } else {
     int n = expand_pcm(play_buf, (int)play_samples * 2, s_feed_conv,
                        s_out_subslot);
     fifo_push(s_feed_conv, (size_t)n);
+  }
+  dlna_cp(24); /* after fifo */
+  /* TEMP DIAG: throttle to ~2 logs/s */
+  static uint32_t s_feed_dbg = 0;
+  if ((s_feed_dbg++ % 200) == 0) {
+    ESP_LOGI(TAG, "feed: samples=%u rate=%lu streaming=%d push_total=%u fifo=%u/%u",
+             (unsigned)play_samples, (unsigned long)rate, (int)s_streaming,
+             (unsigned)s_push_bytes, (unsigned)fifo_level(),
+             (unsigned)s_fifo_target);
   }
   return ESP_OK;
 }
@@ -2404,6 +2438,14 @@ bool audio_output_get_usb_audio_status(usb_audio_status_t *st) {
   st->setup_stage = (int)s_setup_stage;
   st->setup_err = (int)s_setup_err;
   return st->attached;
+}
+
+/* TEMP DIAG: DLNA feed reach counters (see audio_output_usb_host_feed_pcm) */
+uint32_t audio_output_usb_host_get_feed_calls(void) {
+  return s_usb_feed_calls;
+}
+uint32_t audio_output_usb_host_get_feed_skips(void) {
+  return s_usb_feed_skips;
 }
 
 /* v1.1: re-enumerate the attached card with the current user-chosen format.

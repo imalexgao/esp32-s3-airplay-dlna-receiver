@@ -32,3 +32,9 @@ esp_err_t dlna_upnp_start_ssdp(void);
  * Stop the SSDP task.
  */
 void dlna_upnp_stop(void);
+
+/* TEMP DIAG */
+uint32_t dlna_upnp_get_soap_posts(void);
+uint32_t dlna_upnp_get_soap_play(void);
+uint32_t dlna_upnp_get_soap_seturi(void);
+uint32_t dlna_upnp_get_soap_avt_calls(void);

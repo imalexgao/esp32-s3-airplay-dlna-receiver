@@ -21,6 +21,11 @@
 #include "ota.h"
 #include "log_stream.h"
 #include "dlna/dlna_upnp.h"
+#ifdef CONFIG_DLNA_ENABLE
+#include "dlna/dlna_stream.h"
+#include "dlna/dlna_renderer.h"
+#include "dlna/dlna_upnp.h"
+#endif
 #include "rtsp_server.h"
 #include "rtsp_events.h"
 #include "audio_output.h"
@@ -1449,6 +1454,64 @@ static esp_err_t usb_audio_status_handler(httpd_req_t *req) {
     cJSON_AddNumberToObject(json, "underruns", st.underruns);
     cJSON_AddNumberToObject(json, "fifo_bytes", st.fifo_bytes);
     cJSON_AddNumberToObject(json, "fifo_cap", st.fifo_cap);
+    cJSON_AddNumberToObject(json, "dlna_feed_calls",
+                            audio_output_usb_host_get_feed_calls());
+    cJSON_AddNumberToObject(json, "dlna_feed_skips",
+                            audio_output_usb_host_get_feed_skips());
+#ifdef CONFIG_DLNA_ENABLE
+    cJSON_AddNumberToObject(json, "dlna_src_feed_calls",
+                            dlna_stream_get_feed_count());
+    cJSON_AddNumberToObject(json, "dlna_play_last_err",
+                            dlna_stream_get_last_err());
+    cJSON_AddBoolToObject(json, "dlna_task_alive",
+                          dlna_stream_task_alive());
+    cJSON_AddNumberToObject(json, "dlna_http_status",
+                            dlna_stream_get_http_status());
+    cJSON_AddNumberToObject(json, "dlna_http_err",
+                            dlna_stream_get_http_err());
+    cJSON_AddNumberToObject(json, "dlna_mp3_frames",
+                            dlna_stream_get_mp3_frames());
+    cJSON_AddNumberToObject(json, "dlna_mp3_feed_calls",
+                            dlna_stream_get_mp3_feed_calls());
+    cJSON_AddNumberToObject(json, "dlna_flac_frames",
+                            dlna_stream_get_flac_frames());
+    cJSON_AddNumberToObject(json, "dlna_flac_read_calls",
+                            dlna_stream_get_flac_read_calls());
+    cJSON_AddNumberToObject(json, "dlna_fmt_diag",
+                            dlna_stream_get_fmt_diag());
+    cJSON_AddNumberToObject(json, "dlna_flac_open_rc",
+                            dlna_stream_get_flac_open_rc());
+    cJSON_AddNumberToObject(json, "dlna_aac_frames",
+                            dlna_stream_get_aac_frames());
+    cJSON_AddNumberToObject(json, "dlna_aac_open_rc",
+                            dlna_stream_get_aac_open_rc());
+    cJSON_AddNumberToObject(json, "dlna_aac_feed_calls",
+                            dlna_stream_get_aac_feed_calls());
+    cJSON_AddNumberToObject(json, "dlna_stream_end",
+                            dlna_stream_get_stream_end());
+    cJSON_AddNumberToObject(json, "dlna_seturi_calls",
+                            dlna_renderer_get_seturi_calls());
+    cJSON_AddNumberToObject(json, "dlna_play_calls",
+                            dlna_renderer_get_play_calls());
+    cJSON_AddNumberToObject(json, "dlna_stream_play_calls",
+                            dlna_renderer_get_stream_play_calls());
+    cJSON_AddNumberToObject(json, "dlna_uri_len",
+                            dlna_renderer_get_uri_len());
+    cJSON_AddNumberToObject(json, "dlna_soap_posts",
+                            dlna_upnp_get_soap_posts());
+    cJSON_AddNumberToObject(json, "dlna_soap_avt_calls",
+                            dlna_upnp_get_soap_avt_calls());
+    cJSON_AddNumberToObject(json, "dlna_soap_seturi",
+                            dlna_upnp_get_soap_seturi());
+    cJSON_AddNumberToObject(json, "dlna_soap_play",
+                            dlna_upnp_get_soap_play());
+    cJSON_AddNumberToObject(json, "dlna_crash_stage",
+                            dlna_stream_get_crash_stage());
+    cJSON_AddNumberToObject(json, "dlna_dec_size",
+                            dlna_stream_get_dec_size());
+    cJSON_AddNumberToObject(json, "dlna_scratch_size",
+                            dlna_stream_get_scratch_size());
+#endif
     cJSON_AddBoolToObject(json, "hid_active", st.hid_active);
     cJSON_AddNumberToObject(json, "hid_events", st.hid_events);
     cJSON_AddNumberToObject(json, "hid_volup", st.hid_volup);
@@ -2692,9 +2755,11 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_resp_headers = 8;
   /* httpd allocates ONE task of stack_size per open socket (2-3 here), so
    * this is a live RAM cost, not just headroom. DLNA SOAP handlers peak at
-   * ~9.5KB (2048 body + 2048 resp + XML parsing), so 12288 keeps them safe
-   * while bounding total httpd stack to ~36KB worst case (vs 48KB at 16K). */
-  config.stack_size = 12288; // DLNA SOAP handlers need ~9.5KB of stack
+   * ~9.5KB (2048 body + 2048 resp + XML parsing), but the Play path also
+   * runs dlna_stream_play()->ensure_stream_task() (PSRAM stack alloc + static
+   * task create) on this stack; 12KB overflowed and panic-rebooted the device.
+   * 20KB keeps both safe while bounding total httpd stack to ~60KB worst case. */
+  config.stack_size = 20480; // DLNA SOAP + stream-task spawn need ~15KB+
 
   esp_err_t err = httpd_start(&s_server, &config);
   if (err != ESP_OK) {

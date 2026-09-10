@@ -38,6 +38,12 @@ const char *dlna_renderer_get_metadata(void);
 double dlna_renderer_get_position(void);
 double dlna_renderer_get_duration(void);
 
+/* TEMP DIAG */
+uint32_t dlna_renderer_get_seturi_calls(void);
+uint32_t dlna_renderer_get_play_calls(void);
+uint32_t dlna_renderer_get_stream_play_calls(void);
+uint32_t dlna_renderer_get_uri_len(void);
+
 /* Volume, 0..100, wired to the device volume (web UI slider). */
 void dlna_renderer_set_volume(int percent);
 int dlna_renderer_get_volume(void);

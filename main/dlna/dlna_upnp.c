@@ -37,6 +37,17 @@ static char s_location[128] = {0}; /* http://<ip>:80/description.xml */
 static int s_ssdp_fd = -1;
 static bool s_running = false;
 
+/* TEMP DIAG: SOAP request counters */
+static volatile uint32_t s_soap_posts = 0;
+static volatile uint32_t s_soap_play = 0;
+static volatile uint32_t s_soap_seturi = 0;
+static volatile uint32_t s_soap_avt_calls = 0;
+
+uint32_t dlna_upnp_get_soap_posts(void) { return s_soap_posts; }
+uint32_t dlna_upnp_get_soap_play(void) { return s_soap_play; }
+uint32_t dlna_upnp_get_soap_seturi(void) { return s_soap_seturi; }
+uint32_t dlna_upnp_get_soap_avt_calls(void) { return s_soap_avt_calls; }
+
 /* ── Small helpers ─────────────────────────────────────────────────────── */
 
 static void make_uuid(void) {
@@ -182,8 +193,9 @@ static void soap_fault(int code, const char *desc, char *out, size_t sz) {
 static void avt_action(const char *action, const char *body, char *resp,
                        size_t resp_sz) {
   char inner[1024];
-
+  s_soap_avt_calls++;
   if (strcmp(action, "SetAVTransportURI") == 0) {
+    s_soap_seturi++;
     char uri[DLNA_URI_MAX] = {0};
     char meta[DLNA_META_MAX] = {0};
     if (xml_get(body, "CurrentURI", uri, sizeof(uri)) == 0) {
@@ -196,6 +208,7 @@ static void avt_action(const char *action, const char *body, char *resp,
     return;
   }
   if (strcmp(action, "Play") == 0) {
+    s_soap_play++;
     dlna_renderer_play();
     soap_envelope(URN_AVT, action, "", resp, resp_sz);
     return;
@@ -430,6 +443,7 @@ static esp_err_t description_handler(httpd_req_t *req) {
 
 static esp_err_t soap_handler(httpd_req_t *req, bool avt) {
   char body[2048];
+  s_soap_posts++;
   ESP_LOGI(TAG, "soap POST start: len=%d avt=%d", req->content_len, avt);
   int got = read_body(req, body, sizeof(body));
   ESP_LOGI(TAG, "soap POST body read: %d bytes", got);

@@ -52,6 +52,68 @@ set( SRC_FILES
     "dlna/dlna_renderer.c"
     "dlna/dlna_stream.c"
     "dlna/dlna_upnp.c"
+    "dlna/codecs/libhelix-aac/aacdec.c"
+    "dlna/codecs/libhelix-aac/aactabs.c"
+    "dlna/codecs/libhelix-aac/bitstream.c"
+    "dlna/codecs/libhelix-aac/buffers.c"
+    "dlna/codecs/libhelix-aac/dct4.c"
+    "dlna/codecs/libhelix-aac/decelmnt.c"
+    "dlna/codecs/libhelix-aac/dequant.c"
+    "dlna/codecs/libhelix-aac/fft.c"
+    "dlna/codecs/libhelix-aac/filefmt.c"
+    "dlna/codecs/libhelix-aac/huffman.c"
+    "dlna/codecs/libhelix-aac/hufftabs.c"
+    "dlna/codecs/libhelix-aac/imdct.c"
+    "dlna/codecs/libhelix-aac/noiseless.c"
+    "dlna/codecs/libhelix-aac/pns.c"
+    "dlna/codecs/libhelix-aac/sbr.c"
+    "dlna/codecs/libhelix-aac/sbrfft.c"
+    "dlna/codecs/libhelix-aac/sbrfreq.c"
+    "dlna/codecs/libhelix-aac/sbrhfadj.c"
+    "dlna/codecs/libhelix-aac/sbrhfgen.c"
+    "dlna/codecs/libhelix-aac/sbrhuff.c"
+    "dlna/codecs/libhelix-aac/sbrimdct.c"
+    "dlna/codecs/libhelix-aac/sbrmath.c"
+    "dlna/codecs/libhelix-aac/sbrqmf.c"
+    "dlna/codecs/libhelix-aac/sbrside.c"
+    "dlna/codecs/libhelix-aac/sbrtabs.c"
+    "dlna/codecs/libhelix-aac/stproc.c"
+    "dlna/codecs/libhelix-aac/tns.c"
+    "dlna/codecs/libhelix-aac/trigtabs.c"
+    "dlna/codecs/libfaad2/libfaad/bits.c"
+    "dlna/codecs/libfaad2/libfaad/cfft.c"
+    "dlna/codecs/libfaad2/libfaad/common.c"
+    "dlna/codecs/libfaad2/libfaad/decoder.c"
+    "dlna/codecs/libfaad2/libfaad/drc.c"
+    "dlna/codecs/libfaad2/libfaad/error.c"
+    "dlna/codecs/libfaad2/libfaad/filtbank.c"
+    "dlna/codecs/libfaad2/libfaad/hcr.c"
+    "dlna/codecs/libfaad2/libfaad/huffman.c"
+    "dlna/codecs/libfaad2/libfaad/ic_predict.c"
+    "dlna/codecs/libfaad2/libfaad/is.c"
+    "dlna/codecs/libfaad2/libfaad/lt_predict.c"
+    "dlna/codecs/libfaad2/libfaad/mdct.c"
+    "dlna/codecs/libfaad2/libfaad/mp4.c"
+    "dlna/codecs/libfaad2/libfaad/ms.c"
+    "dlna/codecs/libfaad2/libfaad/output.c"
+    "dlna/codecs/libfaad2/libfaad/pns.c"
+    "dlna/codecs/libfaad2/libfaad/ps_dec.c"
+    "dlna/codecs/libfaad2/libfaad/ps_syntax.c"
+    "dlna/codecs/libfaad2/libfaad/pulse.c"
+    "dlna/codecs/libfaad2/libfaad/rvlc.c"
+    "dlna/codecs/libfaad2/libfaad/sbr_dct.c"
+    "dlna/codecs/libfaad2/libfaad/sbr_dec.c"
+    "dlna/codecs/libfaad2/libfaad/sbr_e_nf.c"
+    "dlna/codecs/libfaad2/libfaad/sbr_fbt.c"
+    "dlna/codecs/libfaad2/libfaad/sbr_hfadj.c"
+    "dlna/codecs/libfaad2/libfaad/sbr_hfgen.c"
+    "dlna/codecs/libfaad2/libfaad/sbr_huff.c"
+    "dlna/codecs/libfaad2/libfaad/sbr_qmf.c"
+    "dlna/codecs/libfaad2/libfaad/sbr_syntax.c"
+    "dlna/codecs/libfaad2/libfaad/sbr_tf_grid.c"
+    "dlna/codecs/libfaad2/libfaad/specrec.c"
+    "dlna/codecs/libfaad2/libfaad/syntax.c"
+    "dlna/codecs/libfaad2/libfaad/tns.c"
 )
 
 # Select audio output implementation at compile time. audio_output_common.c
@@ -93,6 +155,9 @@ set( INC_DIRS
     "network"
     "usb"
     "dlna"
+    "dlna/codecs/libhelix-aac"
+    "dlna/codecs/libfaad2/include"
+    "dlna/codecs/libfaad2/libfaad"
 )
 
 set( DEPS
@@ -135,6 +200,9 @@ idf_component_register(
     SRCS ${SRC_FILES}
     INCLUDE_DIRS ${INC_DIRS}
     PRIV_REQUIRES ${DEPS}
+)
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    PACKAGE_VERSION="2.11.1"
 )
 
 # Enable function wrapping for abort() to intercept panics and mute GPIO

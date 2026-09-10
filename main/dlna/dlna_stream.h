@@ -36,5 +36,31 @@ double dlna_stream_get_position(void);
 /** Stream duration in seconds (0 = unknown). */
 double dlna_stream_get_duration(void);
 
+/* TEMP DIAG: number of feed_pcm() invocations since boot */
+uint32_t dlna_stream_get_feed_count(void);
+/* TEMP DIAG: last dlna_stream_play() rc + whether the task object exists */
+int dlna_stream_get_last_err(void);
+bool dlna_stream_task_alive(void);
+/* TEMP DIAG: HTTP open status/err, decoded MP3 frames, feed calls, end code */
+int dlna_stream_get_http_status(void);
+int dlna_stream_get_http_err(void);
+uint32_t dlna_stream_get_mp3_frames(void);
+uint32_t dlna_stream_get_mp3_feed_calls(void);
+/* TEMP DIAG: FLAC decoded frames + onRead (HTTP) invocations */
+uint64_t dlna_stream_get_flac_frames(void);
+uint64_t dlna_stream_get_flac_read_calls(void);
+int dlna_stream_get_fmt_diag(void);
+int dlna_stream_get_flac_open_rc(void);
+uint64_t dlna_stream_get_aac_frames(void);
+int dlna_stream_get_aac_open_rc(void);
+uint32_t dlna_stream_get_aac_feed_calls(void);
+int dlna_stream_get_stream_end(void);
+/* TEMP DIAG: crash checkpoint surviving restart */
+uint32_t dlna_stream_get_crash_stage(void);
+/* TEMP DIAG: write a crash checkpoint (survives restart, see dlna_stream.c) */
+void dlna_cp(uint32_t s);
+uint32_t dlna_stream_get_dec_size(void);
+uint32_t dlna_stream_get_scratch_size(void);
+
 /** True while the stream task is actively playing. */
 bool dlna_stream_is_playing(void);

@@ -243,6 +243,10 @@ int audio_output_get_alt_info(usb_alt_info_t *out, int max);
  */
 bool audio_output_get_usb_audio_status(usb_audio_status_t *st);
 
+/* TEMP DIAG: DLNA feed reach counters */
+uint32_t audio_output_usb_host_get_feed_calls(void);
+uint32_t audio_output_usb_host_get_feed_skips(void);
+
 /**
  * Re-enumerate the attached sound card with the current user-chosen output
  * format (rate x bits) — applies a web format change without unplugging or
