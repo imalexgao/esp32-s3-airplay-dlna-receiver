@@ -1507,6 +1507,8 @@ static esp_err_t usb_audio_status_handler(httpd_req_t *req) {
                             dlna_upnp_get_soap_play());
     cJSON_AddNumberToObject(json, "dlna_crash_stage",
                             dlna_stream_get_crash_stage());
+    cJSON_AddNumberToObject(json, "dlna_ogg_frames",
+                            dlna_stream_get_ogg_frames());
     cJSON_AddNumberToObject(json, "dlna_dec_size",
                             dlna_stream_get_dec_size());
     cJSON_AddNumberToObject(json, "dlna_scratch_size",

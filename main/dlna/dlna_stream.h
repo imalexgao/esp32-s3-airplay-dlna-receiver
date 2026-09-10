@@ -54,6 +54,7 @@ int dlna_stream_get_flac_open_rc(void);
 uint64_t dlna_stream_get_aac_frames(void);
 int dlna_stream_get_aac_open_rc(void);
 uint32_t dlna_stream_get_aac_feed_calls(void);
+uint64_t dlna_stream_get_ogg_frames(void);
 int dlna_stream_get_stream_end(void);
 /* TEMP DIAG: crash checkpoint surviving restart */
 uint32_t dlna_stream_get_crash_stage(void);

@@ -19,6 +19,8 @@
 #include "minimp3.h"
 #include "codecs/libhelix-aac/aacdec.h"
 #include "codecs/libfaad2/include/neaacdec.h"
+#define STB_VORBIS_HEADER_ONLY
+#include "codecs/stb_vorbis.c"
 
 static const char *TAG = "dlna_stream";
 
@@ -225,6 +227,7 @@ typedef enum {
   FMT_MP3,
   FMT_AAC,
   FMT_FLAC,
+  FMT_OGG,
   FMT_UNKNOWN,
 } stream_format_t;
 
@@ -234,6 +237,9 @@ static stream_format_t sniff_format(const uint8_t *h, size_t n) {
   }
   if (n >= 4 && memcmp(h, "fLaC", 4) == 0) {
     return FMT_FLAC;
+  }
+  if (n >= 4 && memcmp(h, "OggS", 4) == 0) {
+    return FMT_OGG;
   }
   if (n >= 2 && h[0] == 0xFF && (h[1] & 0xF6) == 0xF0) {
     return FMT_AAC; /* ADTS AAC: 12-bit sync 0xFFF */
@@ -691,6 +697,118 @@ static size_t mp3_feed(const uint8_t *buf, size_t len) {
   return fed;
 }
 
+/* ── OGG Vorbis (stb_vorbis pushdata streaming) ──────────────────────────── */
+#define OGG_IN_CAP 16384
+static uint8_t s_ogg_in[OGG_IN_CAP];
+static size_t s_ogg_in_len = 0;
+static stb_vorbis *s_ogg = NULL;
+static bool s_ogg_opened = false;
+static volatile uint64_t s_ogg_frames_total = 0;
+static volatile int s_ogg_open_rc = -1;
+
+static void ogg_stop(void) {
+  if (s_ogg) {
+    stb_vorbis_close(s_ogg);
+    s_ogg = NULL;
+  }
+  s_ogg_in_len = 0;
+  s_ogg_opened = false;
+}
+
+/* Feed a raw HTTP chunk: accumulate, open the decoder once the three header
+ * packets have arrived, then decode as many frames as the staged bytes allow.
+ * stb_vorbis pushdata is the no-seek streaming API. */
+static void ogg_feed(const uint8_t *buf, size_t len) {
+  if (s_ogg_in_len + len > OGG_IN_CAP) {
+    size_t keep = OGG_IN_CAP - len;
+    if (s_ogg_in_len > keep) {
+      memmove(s_ogg_in, s_ogg_in + (s_ogg_in_len - keep), keep);
+      s_ogg_in_len = keep;
+    }
+  }
+  memcpy(s_ogg_in + s_ogg_in_len, buf, len);
+  s_ogg_in_len += len;
+
+  if (!s_ogg && !s_ogg_opened) {
+    int used = 0;
+    int err = 0;
+    stb_vorbis *v = stb_vorbis_open_pushdata(s_ogg_in, (int)s_ogg_in_len,
+                                             &used, &err, NULL);
+    if (v) {
+      s_ogg = v;
+      s_ogg_opened = true;
+      s_ogg_open_rc = 1;
+      stb_vorbis_info info = stb_vorbis_get_info(s_ogg);
+      s_rate = info.sample_rate ? (uint32_t)info.sample_rate : 44100;
+      s_channels = (uint32_t)info.channels;
+      s_bits = 16;
+      ESP_LOGI(TAG, "OGG opened: %u Hz %u ch (header used=%d)", s_rate,
+               s_channels, used);
+      if (used > 0 && (size_t)used < s_ogg_in_len) {
+        memmove(s_ogg_in, s_ogg_in + used, s_ogg_in_len - (size_t)used);
+        s_ogg_in_len -= (size_t)used;
+      } else if (used > 0) {
+        s_ogg_in_len = 0;
+      }
+    } else if (err == VORBIS_need_more_data) {
+      s_ogg_open_rc = 0; /* keep accumulating */
+    } else {
+      ESP_LOGE(TAG, "OGG open failed (err=%d)", err);
+      s_ogg_open_rc = -1;
+      s_ogg_in_len = 0;
+      return;
+    }
+  }
+
+  if (!s_ogg) {
+    return;
+  }
+  size_t pos = 0;
+  while (pos < s_ogg_in_len) {
+    int ch = 0;
+    float **outs = NULL;
+    int samples = 0;
+    int used2 = stb_vorbis_decode_frame_pushdata(
+        s_ogg, s_ogg_in + pos, (int)(s_ogg_in_len - pos), &ch, &outs,
+        &samples);
+    if (used2 <= 0) {
+      break; /* need more data */
+    }
+    pos += (size_t)used2;
+    if (samples > 0 && outs) {
+      if (ch > 2) {
+        ch = 2;
+      }
+      int done = 0;
+      while (done < samples) {
+        int chunk = samples - done;
+        if (chunk > (int)PCM_CHUNK_FRAMES) {
+          chunk = (int)PCM_CHUNK_FRAMES;
+        }
+        int16_t *dst = s_pcm_buf;
+        for (int f = 0; f < chunk; f++) {
+          for (int c = 0; c < ch; c++) {
+            float v = outs[c][done + f];
+            if (v < -1.0f) {
+              v = -1.0f;
+            } else if (v > 1.0f) {
+              v = 1.0f;
+            }
+            dst[f * ch + c] = (int16_t)(v * 32767.0f);
+          }
+        }
+        s_ogg_frames_total += (uint64_t)chunk;
+        feed_pcm(dst, (size_t)chunk);
+        done += chunk;
+      }
+    }
+  }
+  if (pos > 0) {
+    memmove(s_ogg_in, s_ogg_in + pos, s_ogg_in_len - pos);
+    s_ogg_in_len -= pos;
+  }
+}
+
 static void stream_task(void *arg) {
   esp_http_client_handle_t client = NULL;
   wav_ctx_t wav;
@@ -811,10 +929,10 @@ static void stream_task(void *arg) {
       ESP_LOGI(TAG, "stream format: %s",
                fmt == FMT_WAV ? "WAV" : fmt == FMT_MP3 ? "MP3"
                : fmt == FMT_AAC ? "AAC" : fmt == FMT_FLAC ? "FLAC"
-                                                          : "UNKNOWN");
+               : fmt == FMT_OGG ? "OGG" : "UNKNOWN");
       if (fmt != FMT_WAV && fmt != FMT_MP3 && fmt != FMT_FLAC &&
-          fmt != FMT_AAC) {
-        ESP_LOGE(TAG, "format not supported yet (WAV/MP3/FLAC/AAC)");
+          fmt != FMT_AAC && fmt != FMT_OGG) {
+        ESP_LOGE(TAG, "format not supported yet (WAV/MP3/FLAC/AAC/OGG)");
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         client = NULL;
@@ -854,6 +972,12 @@ static void stream_task(void *arg) {
         s_bits = 16;
         ESP_LOGI(TAG, "FLAC opened: %u Hz %u ch", s_rate, s_channels);
         dlna_cp(9); /* flac opened */
+      } else if (fmt == FMT_OGG) {
+        ogg_stop();
+        s_ogg_frames_total = 0;
+        s_ogg_open_rc = 0;
+        ogg_feed(sniff, (size_t)got);
+        dlna_cp(26); /* ogg fed */
       } else if (fmt == FMT_AAC) {
         aac_stop();
         ESP_LOGI(TAG, "AAC: faad open (heap=%lu)",
@@ -935,6 +1059,7 @@ static void stream_task(void *arg) {
       }
       flac_stop();
       aac_stop();
+      ogg_stop();
       in_stream = false;
       s_active = false;
       s_paused = false;
@@ -994,6 +1119,12 @@ static void stream_task(void *arg) {
         if ((s_read_calls++ % 100) == 0) {
           ESP_LOGI(TAG, "mp3: n=%d fed=%u", n, (unsigned)f);
         }
+      } else if (fmt == FMT_OGG) {
+        ogg_feed(s_http_buf, (size_t)n);
+        if ((s_read_calls++ % 100) == 0) {
+          ESP_LOGI(TAG, "ogg: frames=%llu",
+                   (unsigned long long)s_ogg_frames_total);
+        }
       } else if (fmt == FMT_AAC) {
         size_t f = aac_feed(s_http_buf, (size_t)n);
         (void)f;
@@ -1006,6 +1137,7 @@ static void stream_task(void *arg) {
 
     flac_stop();
     aac_stop();
+    ogg_stop();
 
     if (!in_stream && client) {
       esp_http_client_close(client);
@@ -1150,4 +1282,5 @@ int dlna_stream_get_flac_open_rc(void) { return s_flac_open_rc; }
 uint64_t dlna_stream_get_aac_frames(void) { return s_aac_frames_total; }
 int dlna_stream_get_aac_open_rc(void) { return s_aac_open_rc; }
 uint32_t dlna_stream_get_aac_feed_calls(void) { return s_aac_feed_calls; }
+uint64_t dlna_stream_get_ogg_frames(void) { return s_ogg_frames_total; }
 int dlna_stream_get_stream_end(void) { return s_stream_end; }
