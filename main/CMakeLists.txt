@@ -53,6 +53,13 @@ set( SRC_FILES
     "dlna/dlna_stream.c"
     "dlna/dlna_upnp.c"
     "dlna/codecs/stb_vorbis.c"
+    "dlna/codecs/alac_wrap.cpp"
+    "dlna/codecs/libalac/codec/ALACBitUtilities.c"
+    "dlna/codecs/libalac/codec/ALACDecoderPs.cpp"
+    "dlna/codecs/libalac/codec/ag_dec.c"
+    "dlna/codecs/libalac/codec/dp_dec.c"
+    "dlna/codecs/libalac/codec/EndianPortable.c"
+    "dlna/codecs/libalac/codec/matrix_dec.c"
     "dlna/codecs/libhelix-aac/aacdec.c"
     "dlna/codecs/libhelix-aac/aactabs.c"
     "dlna/codecs/libhelix-aac/bitstream.c"
@@ -160,6 +167,7 @@ set( INC_DIRS
     "dlna/codecs/libhelix-aac"
     "dlna/codecs/libfaad2/include"
     "dlna/codecs/libfaad2/libfaad"
+    "dlna/codecs/libalac/codec"
 )
 
 set( DEPS

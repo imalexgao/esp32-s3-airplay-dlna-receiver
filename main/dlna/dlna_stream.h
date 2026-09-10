@@ -55,6 +55,22 @@ uint64_t dlna_stream_get_aac_frames(void);
 int dlna_stream_get_aac_open_rc(void);
 uint32_t dlna_stream_get_aac_feed_calls(void);
 uint64_t dlna_stream_get_ogg_frames(void);
+uint64_t dlna_stream_get_alac_frames(void);
+int dlna_stream_get_alac_open_rc(void);
+uint32_t dlna_stream_get_alac_stsz_count(void);
+uint32_t dlna_stream_get_alac_stsz_idx(void);
+uint32_t dlna_stream_get_alac_feed_count(void);
+uint32_t dlna_stream_get_alac_stsz_count(void);
+uint32_t dlna_stream_get_alac_stsz_idx(void);
+#ifdef __cplusplus
+extern "C" {
+#endif
+void alac_wrap_get_init_diag(int *rc, uint32_t *fl, uint32_t *bd,
+                             uint32_t *ch, uint32_t *sr);
+void alac_wrap_get_dec_diag(uint32_t *fail, int32_t *last);
+#ifdef __cplusplus
+}
+#endif
 int dlna_stream_get_stream_end(void);
 /* TEMP DIAG: crash checkpoint surviving restart */
 uint32_t dlna_stream_get_crash_stage(void);

@@ -388,7 +388,8 @@ static void rc_action(const char *action, const char *body, char *resp,
   "http-get:*:audio/mpeg:DLNA.ORG_PN=MP3," \
   "http-get:*:audio/flac:DLNA.ORG_PN=FLAC," \
   "http-get:*:audio/aac:DLNA.ORG_PN=AAC_ADTS," \
-  "http-get:*:audio/ogg:DLNA.ORG_PN=OGG"
+  "http-get:*:audio/ogg:DLNA.ORG_PN=OGG," \
+  "http-get:*:audio/x-alac:DLNA.ORG_PN=ALAC"
 
 static void cm_action(const char *action, const char *body, char *resp,
                       size_t resp_sz) {

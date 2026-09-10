@@ -1509,6 +1509,26 @@ static esp_err_t usb_audio_status_handler(httpd_req_t *req) {
                             dlna_stream_get_crash_stage());
     cJSON_AddNumberToObject(json, "dlna_ogg_frames",
                             dlna_stream_get_ogg_frames());
+    cJSON_AddNumberToObject(json, "dlna_alac_frames",
+                            dlna_stream_get_alac_frames());
+    cJSON_AddNumberToObject(json, "dlna_alac_stsz_count",
+                            dlna_stream_get_alac_stsz_count());
+    cJSON_AddNumberToObject(json, "dlna_alac_stsz_idx",
+                            dlna_stream_get_alac_stsz_idx());
+    cJSON_AddNumberToObject(json, "dlna_alac_feed_count",
+                            dlna_stream_get_alac_feed_count());
+    { uint32_t df; int32_t dl; alac_wrap_get_dec_diag(&df, &dl);
+      cJSON_AddNumberToObject(json, "alac_dec_fail", df);
+      cJSON_AddNumberToObject(json, "alac_dec_last_rc", dl); }
+    cJSON_AddNumberToObject(json, "dlna_alac_open_rc",
+                            dlna_stream_get_alac_open_rc());
+    { int rc; uint32_t fl, bd, ch, sr;
+      alac_wrap_get_init_diag(&rc, &fl, &bd, &ch, &sr);
+      cJSON_AddNumberToObject(json, "alac_init_rc", rc);
+      cJSON_AddNumberToObject(json, "alac_init_fl", fl);
+      cJSON_AddNumberToObject(json, "alac_init_bd", bd);
+      cJSON_AddNumberToObject(json, "alac_init_ch", ch);
+      cJSON_AddNumberToObject(json, "alac_init_sr", sr); }
     cJSON_AddNumberToObject(json, "dlna_dec_size",
                             dlna_stream_get_dec_size());
     cJSON_AddNumberToObject(json, "dlna_scratch_size",

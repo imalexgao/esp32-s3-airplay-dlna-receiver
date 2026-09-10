@@ -228,6 +228,7 @@ typedef enum {
   FMT_AAC,
   FMT_FLAC,
   FMT_OGG,
+  FMT_ALAC,
   FMT_UNKNOWN,
 } stream_format_t;
 
@@ -240,6 +241,9 @@ static stream_format_t sniff_format(const uint8_t *h, size_t n) {
   }
   if (n >= 4 && memcmp(h, "OggS", 4) == 0) {
     return FMT_OGG;
+  }
+  if (n >= 12 && memcmp(h + 4, "ftyp", 4) == 0) {
+    return FMT_ALAC; /* M4A container (ALAC expected; validated on open) */
   }
   if (n >= 2 && h[0] == 0xFF && (h[1] & 0xF6) == 0xF0) {
     return FMT_AAC; /* ADTS AAC: 12-bit sync 0xFFF */
@@ -809,6 +813,355 @@ static void ogg_feed(const uint8_t *buf, size_t len) {
   }
 }
 
+/* ── ALAC (Apple Lossless, M4A container) ──────────────────────────────── */
+extern void *alac_dec_create(const uint8_t *cookie, uint32_t cookie_len);
+extern void alac_dec_get_info(void *h, uint32_t *rate, uint32_t *channels,
+                              uint32_t *bits);
+extern int alac_dec_decode(void *h, const uint8_t *frame, uint32_t frame_len,
+                           int16_t *out, uint32_t *out_frames);
+extern void alac_dec_destroy(void *h);
+
+#define ALAC_MAX_MOOV (128 * 1024)
+static uint8_t *s_alac_moov = NULL;
+static size_t s_alac_moov_len = 0;
+static void *s_alac = NULL;
+static uint8_t s_alac_cookie[32];
+static uint32_t s_alac_cookie_len = 0;
+static bool s_alac_have_moov = false;
+static uint32_t s_alac_rate = 0, s_alac_channels = 0, s_alac_bits = 0;
+static uint32_t s_alac_frame_length = 4096;
+static int s_alac_top = 0; /* 0 atom hdr, 1 skip, 2 moov, 3 mdat */
+static uint32_t s_alac_payload_left = 0;
+static uint8_t s_alac_ah[8];
+static size_t s_alac_ah_off = 0;
+static uint32_t s_alac_flen = 0;
+static uint8_t s_alac_fhdr[4];
+static size_t s_alac_fhdr_off = 0;
+static uint8_t *s_alac_fbuf = NULL;
+static uint32_t s_alac_fbuf_cap = 0;
+static uint32_t s_alac_fbuf_len = 0;
+static int16_t *s_alac_pcm = NULL;
+static uint32_t s_alac_pcm_cap = 0;
+static volatile uint64_t s_alac_frames_total = 0;
+static uint32_t s_alac_feed_count = 0;
+static volatile int s_alac_open_rc = -1;
+static int s_alac_init_rc = 0;
+static uint32_t s_alac_init_fl = 0;
+static uint32_t s_alac_init_bd = 0;
+static uint32_t s_alac_init_ch = 0;
+static uint32_t s_alac_init_sr = 0;
+static uint32_t s_alac_stsz_uniform = 0;
+static uint32_t s_alac_stsz_count = 0;
+static uint32_t s_alac_stsz_idx = 0;
+static uint32_t *s_alac_stsz = NULL;
+static uint32_t s_alac_stsz_cap = 0;
+
+static uint32_t alac_be32(const uint8_t *pp) {
+  return ((uint32_t)pp[0] << 24) | ((uint32_t)pp[1] << 16) |
+         ((uint32_t)pp[2] << 8) | (uint32_t)pp[3];
+}
+
+static int alac_find_atom(const uint8_t *pp, uint32_t size, const char *want,
+                          const uint8_t **out, uint32_t *out_len) {
+  uint32_t off = 0;
+  while (off + 8 <= size) {
+    uint32_t asz = alac_be32(pp + off);
+    if (asz < 8 || off + asz > size) {
+      break;
+    }
+    if (memcmp(pp + off + 4, want, 4) == 0) {
+      *out = pp + off;
+      *out_len = asz;
+      return 0;
+    }
+    if (memcmp(pp + off + 4, "moov", 4) == 0 ||
+        memcmp(pp + off + 4, "trak", 4) == 0 ||
+        memcmp(pp + off + 4, "mdia", 4) == 0 ||
+        memcmp(pp + off + 4, "minf", 4) == 0 ||
+        memcmp(pp + off + 4, "stbl", 4) == 0 ||
+        memcmp(pp + off + 4, "mp4a", 4) == 0) {
+      if (alac_find_atom(pp + off + 8, asz - 8, want, out, out_len) == 0) {
+        return 0;
+      }
+    } else if (memcmp(pp + off + 4, "stsd", 4) == 0 && asz >= 16) {
+      /* stsd payload: version/flags(4) + entry_count(4) + entries */
+      if (alac_find_atom(pp + off + 16, asz - 16, want, out, out_len) == 0) {
+        return 0;
+      }
+    }
+    off += asz;
+  }
+  return -1;
+}
+
+static int alac_parse_moov(const uint8_t *moov, size_t moov_len) {
+  const uint8_t *alac_atom = NULL;
+  uint32_t alac_len = 0;
+  if (alac_find_atom(moov, (uint32_t)moov_len, "alac", &alac_atom,
+                     &alac_len) != 0) {
+    ESP_LOGE(TAG, "ALAC: no alac atom in moov (AAC/M4A not supported)");
+    return -1;
+  }
+  /* AudioSampleEntry layout:
+     [0:8] size+type, [8:36] fixed fields, then codec-specific data.
+     ffmpeg nests a full 'alac' atom there (size@36, type@40, version@44,
+     config@48); iTunes writes the 24-byte ALACSpecificConfig directly at 36. */
+  if (alac_len < 36) {
+    ESP_LOGE(TAG, "ALAC: alac atom too small");
+    return -1;
+  }
+  const uint8_t *cfg = NULL;
+  if (alac_len >= 48 && memcmp(alac_atom + 40, "alac", 4) == 0) {
+    cfg = alac_atom + 48;
+  } else if (alac_len >= 60) {
+    cfg = alac_atom + 36;
+  } else {
+    ESP_LOGE(TAG, "ALAC: cookie not found in stsd entry");
+    return -1;
+  }
+  s_alac_cookie_len = 24;
+  memcpy(s_alac_cookie, cfg, 24);
+  s_alac_frame_length = alac_be32(cfg);
+  if (s_alac_frame_length == 0 || s_alac_frame_length > 8192) {
+    s_alac_frame_length = 4096;
+  }
+  /* stsz: per-sample sizes (M4A mdat has no length prefix) */
+  {
+    const uint8_t *sz_atom = NULL;
+    uint32_t sz_len = 0;
+    s_alac_stsz_uniform = 0;
+    s_alac_stsz_count = 0;
+    s_alac_stsz_idx = 0;
+    if (alac_find_atom(moov, (uint32_t)moov_len, "stsz", &sz_atom,
+                       &sz_len) != 0) {
+      ESP_LOGE(TAG, "ALAC: stsz atom not found");
+      return -1;
+    }
+    if (sz_len < 20) {
+      ESP_LOGE(TAG, "ALAC: stsz too small");
+      return -1;
+    }
+    uint32_t ss = alac_be32(sz_atom + 12);
+    uint32_t cnt = alac_be32(sz_atom + 16);
+    s_alac_stsz_uniform = ss;
+    s_alac_stsz_count = cnt;
+    if (ss == 0) {
+      if (cnt == 0 || sz_len < 20 + cnt * 4) {
+        ESP_LOGE(TAG, "ALAC: stsz table missing");
+        return -1;
+      }
+      if (s_alac_stsz_cap < cnt) {
+        uint32_t *np = heap_caps_realloc(s_alac_stsz, (size_t)cnt * 4,
+                                         MALLOC_CAP_SPIRAM);
+        if (!np) {
+          ESP_LOGE(TAG, "ALAC: stsz alloc failed");
+          return -1;
+        }
+        s_alac_stsz = np;
+        s_alac_stsz_cap = cnt;
+      }
+      for (uint32_t i = 0; i < cnt; i++) {
+        s_alac_stsz[i] = alac_be32(sz_atom + 20 + i * 4);
+      }
+    }
+  }
+  ESP_LOGI(TAG, "ALAC: stsz uniform=%u count=%u", s_alac_stsz_uniform,
+           s_alac_stsz_count);
+  return 0;
+}
+
+static void alac_stop(void) {
+  if (s_alac) {
+    alac_dec_destroy(s_alac);
+    s_alac = NULL;
+  }
+  s_alac_top = 0;
+  s_alac_ah_off = 0;
+  s_alac_have_moov = false;
+  s_alac_moov_len = 0;
+  s_alac_fhdr_off = 0;
+  s_alac_fbuf_len = 0;
+  s_alac_flen = 0;
+  s_alac_stsz_idx = 0;
+  s_alac_stsz_count = 0;
+  s_alac_stsz_uniform = 0;
+}
+
+static void alac_feed(const uint8_t *buf, size_t len) {
+  size_t i = 0;
+  while (i < len) {
+    if (s_alac_top == 3) {
+      /* ---- inside mdat: ALAC frames sized by stsz (no length prefix) ---- */
+      if (s_alac_stsz_idx >= s_alac_stsz_count) {
+        return; /* all frames consumed; ignore any trailing bytes */
+      }
+      if (s_alac_fbuf_len == 0) {
+        s_alac_flen = s_alac_stsz_uniform
+                          ? s_alac_stsz_uniform
+                          : s_alac_stsz[s_alac_stsz_idx];
+        if (s_alac_flen == 0 || s_alac_flen > 1024 * 1024) {
+          ESP_LOGE(TAG, "ALAC: bad frame len %u (idx %u)", s_alac_flen,
+                   s_alac_stsz_idx);
+          s_alac_open_rc = -4;
+          return;
+        }
+        if (s_alac_fbuf_cap < s_alac_flen) {
+          uint8_t *nb = heap_caps_realloc(s_alac_fbuf, s_alac_flen,
+                                          MALLOC_CAP_SPIRAM);
+          if (!nb) {
+            s_alac_open_rc = -5;
+            return;
+          }
+          s_alac_fbuf = nb;
+          s_alac_fbuf_cap = s_alac_flen;
+        }
+      }
+      {
+        size_t needf = s_alac_flen - s_alac_fbuf_len;
+        size_t takef = (len - i < needf) ? len - i : needf;
+        memcpy(s_alac_fbuf + s_alac_fbuf_len, buf + i, takef);
+        s_alac_fbuf_len += (uint32_t)takef;
+        i += takef;
+        if (s_alac_fbuf_len < s_alac_flen) {
+          break; /* frame spans next chunk */
+        }
+      }
+      s_alac_stsz_idx++;
+      uint32_t outn = 0;
+      s_alac_feed_count++;
+      if (alac_dec_decode(s_alac, s_alac_fbuf, s_alac_flen, s_alac_pcm,
+                          &outn) == 0 && outn > 0) {
+        s_alac_frames_total += outn;
+        uint32_t done = 0;
+        while (done < outn) {
+          uint32_t chunk = outn - done;
+          if (chunk > (uint32_t)PCM_CHUNK_FRAMES) {
+            chunk = (uint32_t)PCM_CHUNK_FRAMES;
+          }
+          feed_pcm(s_alac_pcm + (size_t)done * s_alac_channels, chunk);
+          done += chunk;
+        }
+      }
+      s_alac_fbuf_len = 0;
+      s_alac_fhdr_off = 0;
+      continue;
+    }
+    if (s_alac_top == 0) {
+      /* ---- atom header ---- */
+      size_t need = 8 - s_alac_ah_off;
+      size_t take = (len - i < need) ? len - i : need;
+      memcpy(s_alac_ah + s_alac_ah_off, buf + i, take);
+      s_alac_ah_off += take;
+      i += take;
+      if (s_alac_ah_off < 8) {
+        break;
+      }
+      uint32_t sz = alac_be32(s_alac_ah);
+      const char *tp = (const char *)s_alac_ah + 4;
+      uint32_t payload = 0;
+      if (sz == 1) {
+        ESP_LOGE(TAG, "ALAC: 64-bit atoms unsupported");
+        s_alac_open_rc = -2;
+        return;
+      } else if (sz == 0) {
+        payload = 0xFFFFFFFFu;
+      } else if (sz >= 8) {
+        payload = sz - 8;
+      }
+      s_alac_ah_off = 0;
+      if (memcmp(tp, "moov", 4) == 0) {
+        s_alac_top = 2;
+        s_alac_moov_len = 0;
+        s_alac_payload_left = payload;
+        if (!s_alac_moov) {
+          s_alac_moov = heap_caps_malloc(ALAC_MAX_MOOV, MALLOC_CAP_SPIRAM);
+          if (!s_alac_moov) {
+            s_alac_open_rc = -7;
+            return;
+          }
+        }
+      } else if (memcmp(tp, "mdat", 4) == 0) {
+        if (!s_alac_have_moov) {
+          ESP_LOGE(TAG, "ALAC: mdat before moov (moov-at-end unsupported)");
+          s_alac_open_rc = -3;
+          return;
+        }
+        s_alac_top = 3;
+        s_alac_fhdr_off = 0;
+      } else {
+        s_alac_top = 1;
+        s_alac_payload_left = payload;
+      }
+      continue;
+    }
+    if (s_alac_top == 1) {
+      /* ---- skip atom payload ---- */
+      size_t take = (len - i < s_alac_payload_left) ? len - i
+                                                    : s_alac_payload_left;
+      i += take;
+      s_alac_payload_left -= (uint32_t)take;
+      if (s_alac_payload_left == 0) {
+        s_alac_top = 0;
+      }
+      continue;
+    }
+    if (s_alac_top == 2) {
+      /* ---- collect moov payload ---- */
+      size_t take = (len - i < s_alac_payload_left) ? len - i
+                                                    : s_alac_payload_left;
+      if (s_alac_moov_len + take > ALAC_MAX_MOOV) {
+        ESP_LOGE(TAG, "ALAC: moov too large");
+        s_alac_open_rc = -7;
+        return;
+      }
+      memcpy(s_alac_moov + s_alac_moov_len, buf + i, take);
+      s_alac_moov_len += take;
+      i += take;
+      s_alac_payload_left -= (uint32_t)take;
+      if (s_alac_payload_left == 0) {
+        s_alac_top = 0;
+        if (alac_parse_moov(s_alac_moov, s_alac_moov_len) != 0) {
+          s_alac_open_rc = -8;
+          return;
+        }
+        s_alac_have_moov = true;
+        s_alac = alac_dec_create(s_alac_cookie, s_alac_cookie_len);
+        if (!s_alac) {
+          s_alac_open_rc = -9;
+          alac_wrap_get_init_diag(&s_alac_init_rc, &s_alac_init_fl,
+                                  &s_alac_init_bd, &s_alac_init_ch,
+                                  &s_alac_init_sr);
+          ESP_LOGE(TAG, "ALAC create failed: diag rc=%d fl=%u bd=%u ch=%u sr=%u",
+                   s_alac_init_rc, s_alac_init_fl, s_alac_init_bd,
+                   s_alac_init_ch, s_alac_init_sr);
+          return;
+        }
+        s_alac_open_rc = 1;
+        alac_dec_get_info(s_alac, &s_alac_rate, &s_alac_channels,
+                          &s_alac_bits);
+        s_rate = s_alac_rate ? s_alac_rate : 44100;
+        s_channels = s_alac_channels ? s_alac_channels : 2;
+        s_bits = 16;
+        uint32_t pcm_frames = s_alac_frame_length * s_alac_channels;
+        if (s_alac_pcm_cap < pcm_frames) {
+          int16_t *np = heap_caps_realloc(s_alac_pcm, (size_t)pcm_frames * 2,
+                                          MALLOC_CAP_SPIRAM);
+          if (!np) {
+            s_alac_open_rc = -10;
+            return;
+          }
+          s_alac_pcm = np;
+          s_alac_pcm_cap = pcm_frames;
+        }
+        ESP_LOGI(TAG, "ALAC opened: %u Hz %u ch %u bit (frameLen=%u)",
+                 s_alac_rate, s_alac_channels, s_alac_bits,
+                 s_alac_frame_length);
+      }
+      continue;
+    }
+  }
+}
+
 static void stream_task(void *arg) {
   esp_http_client_handle_t client = NULL;
   wav_ctx_t wav;
@@ -929,10 +1282,11 @@ static void stream_task(void *arg) {
       ESP_LOGI(TAG, "stream format: %s",
                fmt == FMT_WAV ? "WAV" : fmt == FMT_MP3 ? "MP3"
                : fmt == FMT_AAC ? "AAC" : fmt == FMT_FLAC ? "FLAC"
-               : fmt == FMT_OGG ? "OGG" : "UNKNOWN");
+               : fmt == FMT_OGG ? "OGG" : fmt == FMT_ALAC ? "ALAC/M4A"
+                                                          : "UNKNOWN");
       if (fmt != FMT_WAV && fmt != FMT_MP3 && fmt != FMT_FLAC &&
-          fmt != FMT_AAC && fmt != FMT_OGG) {
-        ESP_LOGE(TAG, "format not supported yet (WAV/MP3/FLAC/AAC/OGG)");
+          fmt != FMT_AAC && fmt != FMT_OGG && fmt != FMT_ALAC) {
+        ESP_LOGE(TAG, "format not supported yet (WAV/MP3/FLAC/AAC/OGG/ALAC)");
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         client = NULL;
@@ -978,6 +1332,12 @@ static void stream_task(void *arg) {
         s_ogg_open_rc = 0;
         ogg_feed(sniff, (size_t)got);
         dlna_cp(26); /* ogg fed */
+      } else if (fmt == FMT_ALAC) {
+        alac_stop();
+        s_alac_frames_total = 0;
+        s_alac_open_rc = 0;
+        alac_feed(sniff, (size_t)got);
+        dlna_cp(28); /* alac init */
       } else if (fmt == FMT_AAC) {
         aac_stop();
         ESP_LOGI(TAG, "AAC: faad open (heap=%lu)",
@@ -1060,6 +1420,7 @@ static void stream_task(void *arg) {
       flac_stop();
       aac_stop();
       ogg_stop();
+      alac_stop();
       in_stream = false;
       s_active = false;
       s_paused = false;
@@ -1125,6 +1486,12 @@ static void stream_task(void *arg) {
           ESP_LOGI(TAG, "ogg: frames=%llu",
                    (unsigned long long)s_ogg_frames_total);
         }
+      } else if (fmt == FMT_ALAC) {
+        alac_feed(s_http_buf, (size_t)n);
+        if ((s_read_calls++ % 100) == 0) {
+          ESP_LOGI(TAG, "alac: frames=%llu",
+                   (unsigned long long)s_alac_frames_total);
+        }
       } else if (fmt == FMT_AAC) {
         size_t f = aac_feed(s_http_buf, (size_t)n);
         (void)f;
@@ -1138,6 +1505,7 @@ static void stream_task(void *arg) {
     flac_stop();
     aac_stop();
     ogg_stop();
+    alac_stop();
 
     if (!in_stream && client) {
       esp_http_client_close(client);
@@ -1283,4 +1651,9 @@ uint64_t dlna_stream_get_aac_frames(void) { return s_aac_frames_total; }
 int dlna_stream_get_aac_open_rc(void) { return s_aac_open_rc; }
 uint32_t dlna_stream_get_aac_feed_calls(void) { return s_aac_feed_calls; }
 uint64_t dlna_stream_get_ogg_frames(void) { return s_ogg_frames_total; }
+uint64_t dlna_stream_get_alac_frames(void) { return s_alac_frames_total; }
+uint32_t dlna_stream_get_alac_feed_count(void) { return s_alac_feed_count; }
+uint32_t dlna_stream_get_alac_stsz_count(void) { return s_alac_stsz_count; }
+uint32_t dlna_stream_get_alac_stsz_idx(void) { return s_alac_stsz_idx; }
+int dlna_stream_get_alac_open_rc(void) { return s_alac_open_rc; }
 int dlna_stream_get_stream_end(void) { return s_stream_end; }
