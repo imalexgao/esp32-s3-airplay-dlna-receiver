@@ -126,11 +126,6 @@ if(CONFIG_DLNA_ENABLE)
     "dlna/codecs/libfaad2/libfaad/specrec.c"
     "dlna/codecs/libfaad2/libfaad/syntax.c"
     "dlna/codecs/libfaad2/libfaad/tns.c"
-    "dlna/codecs"
-    "dlna/codecs/libhelix-aac"
-    "dlna/codecs/libfaad2/include"
-    "dlna/codecs/libfaad2/libfaad"
-    "dlna/codecs/libalac/codec"
   )
 endif()
 # Select audio output implementation at compile time. audio_output_common.c
@@ -174,6 +169,13 @@ set( INC_DIRS
 )
 if(CONFIG_DLNA_ENABLE)
     list(APPEND INC_DIRS "dlna")
+    list(APPEND INC_DIRS
+        "dlna/codecs"
+        "dlna/codecs/libhelix-aac"
+        "dlna/codecs/libfaad2/include"
+        "dlna/codecs/libfaad2/libfaad"
+        "dlna/codecs/libalac/codec"
+    )
 endif()
 
 set( DEPS
