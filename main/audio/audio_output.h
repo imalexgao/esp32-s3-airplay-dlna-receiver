@@ -263,6 +263,12 @@ bool audio_output_usb_host_reprobe(void);
  * volume (the same stage the card's remote control adjusts).
  */
 void audio_output_set_device_volume_db(float volume_db);
+/* External/app-initiated volume (DLNA SetVolume): may lower gain, clamped to
+ * the user's web-slider ceiling, never raises it. */
+void audio_output_set_device_volume_db_limited(float volume_db);
+/* Toggle DLNA ownership of the shared output chain; while active the AirPlay
+ * playback task parks itself so the DLNA feed task has exclusive access. */
+void audio_output_set_dlna_active(bool active);
 
 /**
  * Get the current device volume in dB (-30..0). With a speaker FU attached

@@ -35,6 +35,14 @@ void source_arbiter_init(void);
 void source_arbiter_activate_dlna(void);
 
 /**
+ * AirPlay SETUP received.  A fresh AirPlay connection is about to start
+ * feeding RTP; if DLNA is still playing, preempt it right away (not only at
+ * RECORD/PLAYING) so the two streams never overlap on the USB FIFO — an
+ * overlap is heard as a loud pop/crack when AirPlay grabs the output.
+ */
+void source_arbiter_notify_airplay_setup(void);
+
+/**
  * DLNA paused or stopped — it no longer owns the output.
  */
 void source_arbiter_release_dlna(void);

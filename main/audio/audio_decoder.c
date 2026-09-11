@@ -4,6 +4,7 @@
 
 #include "audio_decoder.h"
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 
 #include "alac_magic_cookie.h"
@@ -81,12 +82,29 @@ static bool aac_has_adts_header(const uint8_t *data, size_t len) {
 
 static void build_adts_header(uint8_t *header, size_t frame_len,
                               int sample_rate, int channels) {
-  (void)sample_rate;
-  (void)channels;
-
-  int profile = 2;
+  int profile = 2;   // AAC-LC
+  int chan_cfg = (channels >= 1 && channels <= 7) ? channels : 2;
+  /* Map the REAL sample rate to the ADTS frequency index.  The old code
+   * hard-coded freq_idx=4 (44.1 kHz) and ignored the sample_rate argument;
+   * iOS may stream AAC at 48 kHz while announcing 44.1 kHz, and a wrong
+   * ADTS header crashes esp_aac_dec. */
   int freq_idx = 4;
-  int chan_cfg = 2;
+  switch (sample_rate) {
+  case 96000: freq_idx = 0; break;
+  case 88200: freq_idx = 1; break;
+  case 64000: freq_idx = 2; break;
+  case 48000: freq_idx = 3; break;
+  case 44100: freq_idx = 4; break;
+  case 32000: freq_idx = 5; break;
+  case 24000: freq_idx = 6; break;
+  case 22050: freq_idx = 7; break;
+  case 16000: freq_idx = 8; break;
+  case 12000: freq_idx = 9; break;
+  case 11025: freq_idx = 10; break;
+  case 8000:  freq_idx = 11; break;
+  default:     freq_idx = 4; break; /* fall back to 44.1 kHz */
+  }
+
   int packet_len = (int)(frame_len + ADTS_HEADER_LEN);
 
   header[0] = 0xFF;
@@ -225,6 +243,8 @@ int audio_decoder_decode(audio_decoder_t *decoder, const uint8_t *input,
     esp_audio_err_t err =
         esp_alac_dec_decode(decoder->alac_decoder, &raw, &frame, &dec_info);
     if (err != ESP_AUDIO_ERR_OK) {
+      ESP_LOGW(TAG, "ALAC decode error %d (in_len=%u dram_free=%d)", err,
+               (unsigned)input_len, (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
       return -1;
     }
 
@@ -247,6 +267,14 @@ int audio_decoder_decode(audio_decoder_t *decoder, const uint8_t *input,
 
   if (decoder->kind == AUDIO_DECODER_AAC) {
     if (!decoder->aac_decoder) {
+      return -1;
+    }
+
+    /* Sanity gate before feeding esp_aac_dec: a valid AAC-LC frame is
+     * roughly 20..8192 bytes.  Anything outside that (corrupt RTP, a
+     * format-mismatch stream) crashes the closed-source codec instead of
+     * returning an error, so drop it here. */
+    if (input_len < 16 || input_len > 8192) {
       return -1;
     }
 
@@ -285,7 +313,9 @@ int audio_decoder_decode(audio_decoder_t *decoder, const uint8_t *input,
     esp_audio_err_t err =
         esp_aac_dec_decode(decoder->aac_decoder, &raw, &frame, &dec_info);
     if (err != ESP_AUDIO_ERR_OK) {
-      ESP_LOGW(TAG, "AAC decode error %d — resetting decoder", err);
+      ESP_LOGW(TAG, "AAC decode error %d (in_len=%u dram_free=%d) — resetting "
+                    "decoder", err, (unsigned)decode_len,
+               (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
       aac_decoder_reset(decoder);
       return -1;
     }

@@ -154,6 +154,10 @@ bool audio_resample_is_active(void) {
   return active;
 }
 
+uint32_t audio_resample_get_input_rate(void) {
+  return current_input_rate;
+}
+
 void audio_resample_reset(void) {
   if (!resampler) {
     return;
@@ -202,6 +206,9 @@ size_t audio_resample_process(const int16_t *in, size_t in_frames, int16_t *out,
 
 bool audio_resample_is_active(void) {
   return false;
+}
+uint32_t audio_resample_get_input_rate(void) {
+  return 0;
 }
 void audio_resample_reset(void) {
 }

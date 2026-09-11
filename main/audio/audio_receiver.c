@@ -1,4 +1,4 @@
-#include <inttypes.h>
+﻿#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -193,7 +193,14 @@ static void audio_receiver_arm_engine_v2_anchor(void) {
                                  receiver.engine_v2_anchor_network_ns,
                                  receiver.engine_v2_playout_offset_ns)) {
     receiver.engine_v2_anchor_pending = false;
+    /* This mapping came from a real sender anchor — the sender will keep
+     * re-arming it, so the self-bootstrap re-align loop must stand down. */
+    audio_clock_map_set_sender_anchored(&receiver.engine_v2.clock_map, true);
   }
+}
+
+int64_t audio_receiver_get_network_offset_ns(void) {
+  return audio_receiver_network_offset_ns(NULL);
 }
 
 esp_err_t audio_receiver_init(void) {
@@ -775,6 +782,7 @@ void audio_receiver_flush(void) {
   receiver.discard_above_rtp_valid = false;
   receiver.arm_gate_on_next_anchor = false;
   receiver.discard_all_until_anchor = false;
+  receiver.seek_flush_us = 0;
   receiver.paused_rtp_valid = false;
   receiver.blocks_read_in_sequence = 1;
 }
@@ -794,7 +802,9 @@ void audio_receiver_seek_flush(void) {
   // data from filling the buffer between FLUSHBUFFERED and SETRATEANCHORTIME,
   // which would cause a second flush and double the startup delay.
   receiver.discard_all_until_anchor = true;
+  receiver.seek_flush_us = esp_timer_get_time();
 }
+
 
 void audio_receiver_set_deferred_flush(uint32_t flush_until_ts) {
   if (!receiver.stream) {

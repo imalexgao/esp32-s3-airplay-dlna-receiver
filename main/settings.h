@@ -34,6 +34,21 @@ esp_err_t settings_set_volume(float volume_db);
  */
 esp_err_t settings_persist_volume(void);
 
+/**
+ * Get the last AirPlay session volume in dB (source/phone volume).
+ * Independent of the device volume above.  0 dB = full, -30 dB = mute.
+ * @param volume_db Output: volume in dB
+ * @return ESP_OK if found, ESP_ERR_NOT_FOUND if never saved
+ */
+esp_err_t settings_get_airplay_volume(float *volume_db);
+
+/**
+ * Save the AirPlay session volume to NVS so a new session starts at the
+ * level the user last set on the phone, instead of full volume.
+ * @param volume_db Volume in dB (0 = max, -30 = mute)
+ */
+esp_err_t settings_set_airplay_volume(float volume_db);
+
 #ifdef CONFIG_BT_A2DP_ENABLE
 /**
  * Get saved Bluetooth volume (AVRC 0-127 scale).

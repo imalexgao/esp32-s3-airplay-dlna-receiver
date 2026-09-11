@@ -2,6 +2,8 @@
 
 #include "esp_log.h"
 
+#include "audio/audio_output.h"
+#include "audio/audio_receiver.h"
 #include "dlna/dlna_renderer.h"
 #include "dacp_client.h"
 #include "rtsp/rtsp_events.h"
@@ -43,12 +45,38 @@ void source_arbiter_activate_dlna(void) {
     ESP_LOGI(TAG, "DLNA PLAY preempts active AirPlay session");
     /* Ask the phone to pause (same path as the hardware pause button). */
     dacp_send_playpause();
+    /* Hard-stop AirPlay playout on the device regardless of whether the
+     * sender acknowledged the DACP pause.  Some senders (e.g. 网易云) do not
+     * expose a reachable DACP endpoint, so the phone would otherwise keep
+     * feeding audio and the two streams would mix on the USB FIFO.  The RTSP
+     * session stays up; a later RECORD resumes AirPlay normally. */
+    audio_receiver_set_playing(false);
+    /* Fully stop the RTP receiver as well: the phone (e.g. 网易云, no DACP
+     * endpoint) keeps pushing encrypted audio, and decrypting/queueing it on
+     * the device steals CPU and WiFi from the DLNA HTTP stream, which the user
+     * hears as the DLNA track slowing and stuttering.  The RTSP session stays
+     * up; a later RECORD re-starts the receiver normally. */
+    audio_receiver_stop();
+    audio_output_flush();
   }
   s_dlna_active = true;
+  /* Park the AirPlay playback task so it stops touching the shared
+   * resampler/FIFO while DLNA feeds the same chain from its own task. */
+  audio_output_set_dlna_active(true);
+}
+
+void source_arbiter_notify_airplay_setup(void) {
+  if (s_dlna_active) {
+    ESP_LOGI(TAG, "AirPlay SETUP preempts active DLNA session");
+    dlna_renderer_pause_external();
+  }
 }
 
 void source_arbiter_release_dlna(void) {
   s_dlna_active = false;
+  /* Let the AirPlay playback task back in; it re-syncs the shared resampler
+   * from source_rate on its next loop. */
+  audio_output_set_dlna_active(false);
 }
 
 source_arbiter_active_t source_arbiter_get_active(void) {

@@ -6,6 +6,8 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "audio/audio_output.h"
 #include "dlna/dlna_stream.h"
@@ -154,10 +156,12 @@ void dlna_renderer_set_volume(int percent) {
   if (percent > 100) {
     percent = 100;
   }
-  /* Device volume is -30..0 dB; 0% -> -30 dB, 100% -> 0 dB. */
+  /* Device volume is -30..0 dB; 0% -> -30 dB, 100% -> 0 dB.  The DLNA volume
+   * is external/app-controlled, so it goes through the clamped API: it may
+   * lower the gain but can never exceed the user's web-slider ceiling. */
   float db = -30.0f + 30.0f * (float)percent / 100.0f;
-  audio_output_set_device_volume_db(db);
-  ESP_LOGI(TAG, "DLNA SetVolume %d%% -> %.1f dB", percent, db);
+  audio_output_set_device_volume_db_limited(db);
+  ESP_LOGI(TAG, "DLNA SetVolume %d%% -> %.1f dB (clamped)", percent, db);
 }
 
 int dlna_renderer_get_volume(void) {
@@ -173,10 +177,28 @@ int dlna_renderer_get_volume(void) {
 }
 
 void dlna_renderer_pause_external(void) {
-  if (s_state == DLNA_STATE_PLAYING) {
-    s_pos_base = clock_now();
-  }
-  s_state = DLNA_STATE_PAUSED;
+  /* Full teardown, not a soft pause: AirPlay preemption must free the DRAM
+   * that the DLNA pull task / decoder holds (QQ Music's multi-connection
+   * session already shrinks free DRAM, and keeping the decoder alive pushed
+   * free heap down to ~21 KB with a 7.5 KB largest block — too small for the
+   * 8 KB AirPlay receiver task stack, so preemption failed with
+   * "Failed to create receiver task"). A STOPPED transport is also the
+   * behaviour the user wants for a preempted source: it disconnects cleanly
+   * instead of lingering in PAUSED. */
+  s_pos_base = 0.0;
+  s_state = DLNA_STATE_STOPPED;
+  ESP_LOGI(TAG, "DLNA preempt: calling dlna_stream_stop()");
+  /* Stop the pull task first, then release the output, then flush residual
+   * DLNA PCM so AirPlay does not start over stale audio. */
+  dlna_stream_stop();
+  ESP_LOGI(TAG, "DLNA preempt: stream_stop queued, delaying 150ms");
+  /* dlna_stream_stop() is async (a CMD into the stream task); give it a moment
+   * to close the HTTP client and free the decoder buffers so the AirPlay
+   * receiver task (8 KB stack, DRAM-allocated) can be created. */
+  vTaskDelay(pdMS_TO_TICKS(150));
+  ESP_LOGI(TAG, "DLNA preempt: releasing source arbiter");
   source_arbiter_release_dlna();
-  ESP_LOGI(TAG, "DLNA preempted by AirPlay -> PAUSED (output released)");
+  ESP_LOGI(TAG, "DLNA preempt: flushing output");
+  audio_output_flush();
+  ESP_LOGI(TAG, "DLNA preempted by AirPlay -> STOPPED (resources released)");
 }

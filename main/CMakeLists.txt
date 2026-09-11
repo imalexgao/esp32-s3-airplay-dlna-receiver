@@ -1,4 +1,4 @@
-set( SRC_FILES
+﻿set( SRC_FILES
     "main.c"
     "alac_magic_cookie.c"
     "settings.c"
@@ -48,6 +48,10 @@ set( SRC_FILES
     "buttons.c"
     "playback_control.c"
     "dacp_client.c"
+)
+
+if(CONFIG_DLNA_ENABLE)
+  list(APPEND SRC_FILES
     "dlna/source_arbiter.c"
     "dlna/dlna_renderer.c"
     "dlna/dlna_stream.c"
@@ -122,8 +126,13 @@ set( SRC_FILES
     "dlna/codecs/libfaad2/libfaad/specrec.c"
     "dlna/codecs/libfaad2/libfaad/syntax.c"
     "dlna/codecs/libfaad2/libfaad/tns.c"
-)
-
+    "dlna/codecs"
+    "dlna/codecs/libhelix-aac"
+    "dlna/codecs/libfaad2/include"
+    "dlna/codecs/libfaad2/libfaad"
+    "dlna/codecs/libalac/codec"
+  )
+endif()
 # Select audio output implementation at compile time. audio_output_common.c
 # carries weak defaults for the optional entry points, so a backend only has
 # to implement what it actually supports.
@@ -162,13 +171,10 @@ set( INC_DIRS
     "hap" 
     "network"
     "usb"
-    "dlna"
-    "dlna/codecs"
-    "dlna/codecs/libhelix-aac"
-    "dlna/codecs/libfaad2/include"
-    "dlna/codecs/libfaad2/libfaad"
-    "dlna/codecs/libalac/codec"
 )
+if(CONFIG_DLNA_ENABLE)
+    list(APPEND INC_DIRS "dlna")
+endif()
 
 set( DEPS
     driver

@@ -19,7 +19,7 @@
 #define RTP_HEADER_SIZE 12
 // Must fit the ~11 KB largest free block that survives the Bluetooth teardown,
 // so keep it under that even though the heap has ~40 KB free at this point.
-#define AUDIO_RECV_STACK_SIZE    8192
+#define AUDIO_RECV_STACK_SIZE    6144
 #define AUDIO_CTRL_STACK_SIZE    4096
 #define RESEND_WINDOW_BITS       64
 #define RESEND_RETRY_INTERVAL_US 250000 // Match common RAOP resend cadence
@@ -288,6 +288,14 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
       resend_retry_if_due(state);
       return true;
     }
+    /* Transient UDP errors: iOS renegotiates the stream (SETUP again, ALAC ->
+     * AAC, new data port) and packets aimed at the old port surface as
+     * ECONNREFUSED / ECONNRESET / ENOTCONN. These must NOT kill the receiver
+     * task — treat them as "no data this round". */
+    if (errno == ECONNREFUSED || errno == ECONNRESET || errno == ENOTCONN) {
+      resend_retry_if_due(state);
+      return true;
+    }
     if (stream->running) {
       ESP_LOGE(TAG, "recvfrom error: %d", errno);
     }
@@ -357,6 +365,14 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
 
   if (!audio_stream_process_frame(state, timestamp, audio_data, audio_len)) {
     state->stats.packets_dropped++;
+    if ((state->stats.packets_dropped % 100) == 1) {
+      ESP_LOGI(TAG, "rx: frame dropped (ts=%lu len=%u drop=%lu)",
+               (unsigned long)timestamp, (unsigned)audio_len,
+               (unsigned long)state->stats.packets_dropped);
+    }
+  } else if ((state->stats.packets_received % 100) == 1) {
+    ESP_LOGI(TAG, "rx: frame accepted (ts=%lu len=%u)",
+             (unsigned long)timestamp, (unsigned)audio_len);
   }
 
   return true;
@@ -384,10 +400,20 @@ static void receiver_task(void *pvParameters) {
   struct sockaddr_in src_addr;
   socklen_t addr_len = sizeof(src_addr);
 
+  uint32_t pkt_count = 0;
   while (stream->running) {
     if (!realtime_receive_packet(stream, packet, &src_addr, &addr_len)) {
+      ESP_LOGE(TAG, "receiver_task exited: realtime_receive_packet failed "
+                    "(pkts=%lu)", (unsigned long)pkt_count);
       break;
     }
+    pkt_count++;
+    if ((pkt_count % 100) == 0 || pkt_count == 1) {
+      ESP_LOGI(TAG, "receiver_task: %lu RTP pkts", (unsigned long)pkt_count);
+    }
+  }
+  if (stream->running) {
+    ESP_LOGI(TAG, "receiver_task: loop ended, pkts=%lu", (unsigned long)pkt_count);
   }
 
   ESP_LOGI(TAG, "receiver task stack headroom: %u bytes",

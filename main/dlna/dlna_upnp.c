@@ -4,10 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
@@ -204,6 +207,7 @@ static void avt_action(const char *action, const char *body, char *resp,
     }
     xml_get(body, "CurrentURIMetaData", meta, sizeof(meta));
     xml_entity_decode(meta);
+    ESP_LOGI(TAG, "SetAVTransportURI: uri=%.120s meta=%.80s", uri, meta);
     dlna_renderer_set_uri(uri, meta);
     soap_envelope(URN_AVT, action, "", resp, resp_sz);
     return;
@@ -381,15 +385,18 @@ static void rc_action(const char *action, const char *body, char *resp,
 
 /* Supported sink formats advertised via GetProtocolInfo. Order matters for
  * some control points (LPCM first = default). WAV is served as LPCM;
- * OGG/AIFF are advertised as raw container types. */
+ * OGG is advertised as a raw container type.  Every entry carries the full
+ * DLNA.ORG_* tuple (PN/OP/FLAGS) — some control points (QQ Music, Foobar2000)
+ * reject or downgrade entries that omit DLNA.ORG_FLAGS.  OP=00 means we do
+ * not advertise HTTP byte-range (we always serve the whole resource). */
 #define SINK_PROTOCOL_INFO \
   "http-get:*:audio/L16;rate=44100;channels=2:DLNA.ORG_PN=LPCM;DLNA.ORG_OP=00;DLNA.ORG_FLAGS=01700000000000000000000000000000," \
   "http-get:*:audio/L16;rate=48000;channels=2:DLNA.ORG_PN=LPCM;DLNA.ORG_OP=00;DLNA.ORG_FLAGS=01700000000000000000000000000000," \
-  "http-get:*:audio/mpeg:DLNA.ORG_PN=MP3," \
-  "http-get:*:audio/flac:DLNA.ORG_PN=FLAC," \
-  "http-get:*:audio/aac:DLNA.ORG_PN=AAC_ADTS," \
-  "http-get:*:audio/ogg:DLNA.ORG_PN=OGG," \
-  "http-get:*:audio/x-alac:DLNA.ORG_PN=ALAC"
+  "http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=00;DLNA.ORG_FLAGS=01700000000000000000000000000000," \
+  "http-get:*:audio/flac:DLNA.ORG_PN=FLAC;DLNA.ORG_OP=00;DLNA.ORG_FLAGS=01700000000000000000000000000000," \
+  "http-get:*:audio/aac:DLNA.ORG_PN=AAC_ADTS;DLNA.ORG_OP=00;DLNA.ORG_FLAGS=01700000000000000000000000000000," \
+  "http-get:*:audio/ogg:DLNA.ORG_PN=OGG;DLNA.ORG_OP=00;DLNA.ORG_FLAGS=01700000000000000000000000000000," \
+  "http-get:*:audio/x-alac:DLNA.ORG_PN=ALAC;DLNA.ORG_OP=00;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 
 static void cm_action(const char *action, const char *body, char *resp,
                       size_t resp_sz) {
@@ -446,6 +453,7 @@ static void send_xml(httpd_req_t *req, int status, const char *body) {
 static esp_err_t description_handler(httpd_req_t *req) {
   char name[65] = {0};
   settings_get_device_name(name, sizeof(name));
+  ESP_LOGI(TAG, "description.xml requested");
   char body[2048];
   snprintf(body, sizeof(body),
            "<?xml version=\"1.0\"?>\n"
@@ -460,6 +468,8 @@ static esp_err_t description_handler(httpd_req_t *req) {
            "<modelName>ESP32-S3-AirPlay2-DLNA</modelName>"
            "<modelNumber>2.0</modelNumber>"
            "<UDN>%s</UDN>"
+           "<dlna:X_DLNADOC xmlns:dlna=\"urn:schemas-dlna-org:device-1-0\">DMR-1.50</dlna:X_DLNADOC>"
+           "<dlna:X_DLNACAP xmlns:dlna=\"urn:schemas-dlna-org:device-1-0\">av-upload,av-upload:1</dlna:X_DLNACAP>"
            "<serviceList>"
            "<service>"
            "<serviceType>%s</serviceType>"
@@ -511,6 +521,7 @@ static esp_err_t soap_handler(httpd_req_t *req, bool avt, bool rc) {
     memcpy(action, hash + 1, n);
     action[n] = 0;
   }
+  ESP_LOGI(TAG, "soap action: %s", action);
 
   char resp[2048];
   if (avt) {
@@ -522,6 +533,7 @@ static esp_err_t soap_handler(httpd_req_t *req, bool avt, bool rc) {
   }
 
   bool fault = strstr(resp, "s:Fault") != NULL;
+  ESP_LOGI(TAG, "soap resp: %s len=%d fault=%d", action, (int)strlen(resp), fault);
   send_xml(req, fault ? 500 : 200, resp);
   return ESP_OK;
 }
@@ -541,6 +553,13 @@ static esp_err_t cm_control_handler(httpd_req_t *req) {
 static esp_err_t event_sub_handler(httpd_req_t *req) {
   /* Acknowledge GENA subscribe/unsubscribe; no event push in M1 (control
    * points poll GetPositionInfo anyway). */
+  char sid[96] = {0}, cb[192] = {0}, nt[64] = {0};
+  httpd_req_get_hdr_value_str(req, "SID", sid, sizeof(sid));
+  httpd_req_get_hdr_value_str(req, "CALLBACK", cb, sizeof(cb));
+  httpd_req_get_hdr_value_str(req, "NT", nt, sizeof(nt));
+  ESP_LOGI(TAG, "GENA %s SID='%s' CALLBACK='%.80s' NT='%s'",
+           req->method == HTTP_SUBSCRIBE ? "SUBSCRIBE" : "UNSUBSCRIBE",
+           sid, cb, nt);
   httpd_resp_set_status(req, "200 OK");
   httpd_resp_set_hdr(req, "SID",
                      "uuid:dlna-event-00000000000000000000000000000000");
@@ -941,7 +960,7 @@ static void ssdp_respond_ms(char *buf, int len, struct sockaddr_in *src) {
   if (strcmp(p, "ssdp:all") != 0 && strcmp(p, URN_ROOT) != 0 &&
       strcmp(p, URN_DEVICE) != 0 && strcmp(p, URN_AVT) != 0 &&
       strcmp(p, URN_RC) != 0) {
-    ESP_LOGI(TAG, "ST not for us, dropping");
+    ESP_LOGD(TAG, "ST not for us, dropping");
     return; /* not for us */
   }
 
@@ -1030,7 +1049,7 @@ static void ssdp_task(void *arg) {
                      (struct sockaddr *)&src, &srclen);
     if (n > 0) {
       buf[n] = 0;
-      ESP_LOGI(TAG, "SSDP recv %d bytes from %s:%d: %.24s", n,
+      ESP_LOGD(TAG, "SSDP recv %d bytes from %s:%d: %.24s", n,
                inet_ntoa(src.sin_addr), ntohs(src.sin_port), buf);
       if (strncmp(buf, "M-SEARCH", 8) == 0) {
         ssdp_respond_ms(buf, n, &src);
@@ -1040,7 +1059,7 @@ static void ssdp_task(void *arg) {
     if (now - last_alive > ALIVE_INTERVAL_US) {
       last_alive = now;
       ssdp_announce_alive();
-      ESP_LOGI(TAG, "SSDP alive announced");
+      ESP_LOGD(TAG, "SSDP alive announced");
     }
   }
 
@@ -1088,7 +1107,21 @@ esp_err_t dlna_upnp_register(httpd_handle_t server) {
   u.uri = "/upnp/control/cm";
   httpd_register_uri_handler(server, &u);
 
+  /* GENA event subscription uses SUBSCRIBE/UNSUBSCRIBE methods (not POST).
+   * QQ Music subscribes to AVT/RC before connecting; a 405 there leaves the
+   * app stuck on "connecting". */
+  u.method = HTTP_SUBSCRIBE;
   u.handler = event_sub_handler;
+  u.uri = "/upnp/event/avt";
+  httpd_register_uri_handler(server, &u);
+
+  u.uri = "/upnp/event/rc";
+  httpd_register_uri_handler(server, &u);
+
+  u.uri = "/upnp/event/cm";
+  httpd_register_uri_handler(server, &u);
+
+  u.method = HTTP_UNSUBSCRIBE;
   u.uri = "/upnp/event/avt";
   httpd_register_uri_handler(server, &u);
 
@@ -1109,9 +1142,26 @@ esp_err_t dlna_upnp_start_ssdp(void) {
   s_running = true;
   /* 4096 was too small: M-SEARCH respond path (recvfrom buf + respond +
    * location + ESP_LOG formatting) overflowed the task stack and the
-   * watchdog flagged it — one of the boot-loop causes. 8192 gives margin. */
-  BaseType_t ok = xTaskCreate(ssdp_task, "dlna_ssdp", 8192, NULL, 5, NULL);
-  if (ok != pdPASS) {
+   * watchdog flagged it — one of the boot-loop causes. 8192 gives margin.
+   * The stack lives in PSRAM (CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y):
+   * an 8 KB internal stack is exactly the kind of DRAM block that fails to
+   * allocate once web_server/USB/FIFO are up, and AirPlay playback later
+   * needs every KB of internal RAM for the esp_audio_codec decoders. */
+  static StaticTask_t s_ssdp_tcb;
+  static StackType_t *s_ssdp_stack = NULL;
+  if (!s_ssdp_stack) {
+    s_ssdp_stack = heap_caps_malloc(8192 * sizeof(StackType_t),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_ssdp_stack) {
+      ESP_LOGE(TAG, "SSDP PSRAM stack alloc failed");
+      s_running = false;
+      return ESP_ERR_NO_MEM;
+    }
+  }
+  TaskHandle_t h = xTaskCreateStaticPinnedToCore(ssdp_task, "dlna_ssdp", 8192,
+                                                 NULL, 5, s_ssdp_stack,
+                                                 &s_ssdp_tcb, 0);
+  if (!h) {
     s_running = false;
     return ESP_ERR_NO_MEM;
   }

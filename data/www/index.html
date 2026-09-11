@@ -1,7 +1,7 @@
 <!DOCTYPE html><html><head>
 <meta charset='UTF-8'>
 <meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>ESP32-AirPlay2</title>
+<title>ESP32-AirPlay2-DLNA Receiver</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(160deg,#0a0c0f 0%,#11141a 55%,#0d1014 100%);min-height:100vh;padding:20px;color:#e8eaed}
@@ -54,7 +54,7 @@ a.btn{text-decoration:none;text-align:center}
 .hint{font-size:12px;color:#98a2b3;opacity:0.75;margin-top:10px;margin-bottom:6px;line-height:1.5}
 </style></head><body>
 <div class='wrap'>
-<div class='header'><h1>ESP32-AirPlay2</h1><p data-i18n='subtitle'>AirPlay 2 接收器 · ESP32-S3 → USB 声卡</p>
+<div class='header'><h1>ESP32-AirPlay2-DLNA Receiver</h1><p data-i18n='subtitle'>AirPlay 2 + DLNA 接收器 · ESP32-S3 → USB 声卡</p>
 <div class='lang-switch'>
 <button id='lang-zh' onclick='setLang(0)'>中文</button>
 <button id='lang-en' onclick='setLang(1)'>EN</button>
@@ -72,6 +72,7 @@ a.btn{text-decoration:none;text-align:center}
 <div class='card'><h2><span data-i18n='usb_title'>音频编码状态</span> <span style='font-size:11px;color:#888;font-weight:400' data-i18n='usb_sub'>USB 声卡编码信息</span></h2>
 <div id='usb-status-bar' class='msg info' style='margin-top:0' data-i18n='usb_none'>未检测到 USB 声卡，请插入 USB 端口。</div>
 <div id='usb-grid' class='info-grid' style='display:none;margin-top:12px'>
+<div class='info-item'><label data-i18n='usb_proto'>推流协议</label><span id='usb-proto'>-</span></div>
 <div class='info-item'><label data-i18n='usb_dev'>设备</label><span id='usb-product'>-</span></div>
 <div class='info-item'><label data-i18n='usb_uac'>USB 音频类</label><span id='usb-uac'>-</span></div>
 <div class='info-item'><label data-i18n='usb_rate'>采样率</label><span id='usb-rate'>-</span></div>
@@ -104,11 +105,11 @@ a.btn{text-decoration:none;text-align:center}
 <option value='1' data-i18n='latency_low'>低延时（60ms · 更跟手）</option>
 <option value='2' data-i18n='latency_ultra'>极速（20ms · 声画同步优先）</option>
 </select></div>
-<div class='hint' data-i18n='latency_hint'>预滚 = 起播前接收器缓冲的音频量，决定切歌后的出声速度和声画同步度。数值越低越跟手，但 WiFi 波动时更容易卡顿/爆音。下次 AirPlay 会话开始生效。</div>
+<div class='hint' data-i18n='latency_hint'>预滚 = 起播前接收器缓冲的音频量，决定切歌后的出声速度和声画同步度。数值越低越跟手，但 WiFi 波动时更容易卡顿/爆音。下次播放会话开始生效。</div>
 <div id='latency-msg'></div></div>
 
 <div class='card'><h2 data-i18n='dev_title'>设备设置</h2>
-<div class='form-group'><label data-i18n='dev_name'>AirPlay 设备名称</label><input type='text' id='dev-name' data-i18n-ph='dev_name_ph' placeholder='我的音箱'></div>
+<div class='form-group'><label data-i18n='dev_name'>设备名称</label><input type='text' id='dev-name' data-i18n-ph='dev_name_ph' placeholder='我的音箱'></div>
 <button class='btn btn-primary' onclick='saveName()' data-i18n='save_name'>保存名称</button>
 <div id='name-msg'></div>
 <div class='form-group' style='margin-top:18px'><label for='airplay-mode' data-i18n='ap_mode'>AirPlay 模式</label>
@@ -192,7 +193,7 @@ a.btn{text-decoration:none;text-align:center}
 var LANG=0; /* 0=中文 1=English */
 var I18N={
 zh:{
- subtitle:'AirPlay 2 接收器 · ESP32-S3 → USB 声卡', loading:'正在加载…',
+ subtitle:'AirPlay 2 + DLNA 接收器 · ESP32-S3 → USB 声卡', loading:'正在加载…',
  wifi_title:'WiFi 网络', wifi_scan:'扫描网络', wifi_ssid:'网络名称 (SSID)', wifi_ssid_ph:'请输入或选择网络',
  wifi_pass:'密码', wifi_pass_ph:'请输入密码', wifi_connect:'连接 WiFi',
  scanning:'正在扫描…', no_net:'未找到网络', scan_fail:'扫描失败', need_ssid:'请输入网络名称',
@@ -201,6 +202,7 @@ zh:{
  usb_dev:'设备', usb_uac:'USB 音频类', usb_rate:'采样率', usb_bits:'位深', usb_ch:'声道',
  usb_state:'流状态', usb_uptime:'运行时长', usb_peak:'输出电平 (峰值)', usb_ap_vol:'AirPlay 音量',
  usb_dev_vol:'设备音量', usb_preroll:'预滚缓冲', playing:'播放中', idle:'空闲',
+ usb_proto:'推流协议', proto_airplay:'AirPlay 2', proto_dlna:'DLNA', proto_none:'无（空闲）',
  no_audio:'无音频', unnamed:'(未命名设备)', stg_none:'无', usb_stage:'配置阶段',
  usb_stage_err:'（错误码 {e}）——设备枚举未完成', usb_unavail:'USB 状态不可用',
  vol_title:'音量控制', vol_hint:'设备音量：数字增益（100% = 满幅直通，与电脑音量 100% 同级别；向下为衰减，不削波），与手机音量相互独立、互不联动；遥控器按键调节会同步显示到此处',
@@ -211,9 +213,9 @@ zh:{
  fmt_no_card:'未检测到声卡，无需重新应用（已保存，插卡时生效）。', fmt_err:'格式保存失败',
  latency_title:'延时模式', latency_normal:'普通（180ms 预滚 · 稳定优先）',
  latency_low:'低延时（60ms · 更跟手）', latency_ultra:'极速（20ms · 声画同步优先）',
- latency_hint:'预滚 = 起播前接收器缓冲的音频量，决定切歌后的出声速度和声画同步度。数值越低越跟手，但 WiFi 波动时更容易卡顿/爆音。下次 AirPlay 会话开始生效。',
+ latency_hint:'预滚 = 起播前接收器缓冲的音频量，决定切歌后的出声速度和声画同步度。数值越低越跟手，但 WiFi 波动时更容易卡顿/爆音。下次播放会话开始生效。',
  latency_saved:'延时模式已保存，下次播放生效。', latency_err:'延时模式保存失败',
- dev_title:'设备设置', dev_name:'AirPlay 设备名称', dev_name_ph:'我的音箱', save_name:'保存名称',
+ dev_title:'设备设置', dev_name:'设备名称', dev_name_ph:'我的音箱', save_name:'保存名称',
  name_empty:'请输入名称', name_saved:'已保存！请重启生效。',
  ap_mode:'AirPlay 模式', ap_v2:'多房间 (v2)', ap_v1:'兼容旧版 (v1)',
  ap_hint:'部分软件仅支持 AirPlay v1。苹果设备仍可在此模式下工作，但没有 v2 特性（如多音箱同步）。音量 / 切歌硬件按键需要 v1 模式。',
@@ -244,7 +246,7 @@ zh:{
  fmt_hint_t:'当前选择：{q}。Windows 同规格下声音最大（48kHz/24bit）。44.1kHz 在部分声卡上音量偏小。'
 },
 en:{
- subtitle:'AirPlay 2 receiver · ESP32-S3 → USB sound card', loading:'Loading…',
+ subtitle:'AirPlay 2 + DLNA receiver · ESP32-S3 → USB sound card', loading:'Loading…',
  wifi_title:'WiFi Network', wifi_scan:'Scan networks', wifi_ssid:'Network name (SSID)', wifi_ssid_ph:'Enter or pick a network',
  wifi_pass:'Password', wifi_pass_ph:'Enter password', wifi_connect:'Connect WiFi',
  scanning:'Scanning…', no_net:'No networks found', scan_fail:'Scan failed', need_ssid:'Enter a network name',
@@ -253,6 +255,7 @@ en:{
  usb_dev:'Device', usb_uac:'USB Audio Class', usb_rate:'Sample rate', usb_bits:'Bit depth', usb_ch:'Channels',
  usb_state:'Stream', usb_uptime:'Uptime', usb_peak:'Output peak', usb_ap_vol:'AirPlay volume',
  usb_dev_vol:'Device volume', usb_preroll:'Pre-roll buffer', playing:'Playing', idle:'Idle',
+ usb_proto:'Streaming protocol', proto_airplay:'AirPlay 2', proto_dlna:'DLNA', proto_none:'None (idle)',
  no_audio:'No audio', unnamed:'(unnamed device)', stg_none:'None', usb_stage:'Setup stage',
  usb_stage_err:'(error {e}) — enumeration incomplete', usb_unavail:'USB status unavailable',
  vol_title:'Volume Control', vol_hint:'Device volume: digital gain (100% = full-scale passthrough, same level as 100% on a PC; lower values attenuate, never clip). It is independent of the phone volume; the remote control volume keys are shown here too.',
@@ -263,9 +266,9 @@ en:{
  fmt_no_card:'No card attached — nothing to re-apply (saved; takes effect when plugged).', fmt_err:'Failed to save format',
  latency_title:'Latency Mode', latency_normal:'Normal (180ms pre-roll · stability first)',
  latency_low:'Low latency (60ms · snappier)', latency_ultra:'Ultra (20ms · A/V sync first)',
- latency_hint:'Pre-roll = how much audio the receiver buffers before playback starts; it determines track-switch response and A/V sync. Lower is snappier but more prone to dropouts on a congested WiFi link. Applies at the next AirPlay session.',
+ latency_hint:'Pre-roll = how much audio the receiver buffers before playback starts; it determines track-switch response and A/V sync. Lower is snappier but more prone to dropouts on a congested WiFi link. Applies at the next playback session.',
  latency_saved:'Latency mode saved; applies at next playback.', latency_err:'Failed to save latency mode',
- dev_title:'Device Settings', dev_name:'AirPlay device name', dev_name_ph:'My Speaker', save_name:'Save name',
+ dev_title:'Device Settings', dev_name:'Device name', dev_name_ph:'My Speaker', save_name:'Save name',
  name_empty:'Enter a name', name_saved:'Saved! Restart to apply.',
  ap_mode:'AirPlay Mode', ap_v2:'Multi-room (v2)', ap_v1:'Legacy (v1)',
  ap_hint:'Some apps only support AirPlay v1. Apple devices still work in this mode but lose v2 features (e.g. multi-speaker sync). Hardware volume / track keys need v1 mode.',
@@ -523,6 +526,13 @@ async function loadUsbStatus(){
       }
       return;}
     bar.style.display='none';grid.style.display='';
+    var proto=document.getElementById('usb-proto');
+    if(proto){
+      var pname=d.active_source==='airplay'?T('proto_airplay')
+        :(d.active_source==='dlna'?T('proto_dlna'):T('proto_none'));
+      proto.textContent=pname;
+      proto.style.color=d.active_source==='none'?'#aaa':'#6fd89a';
+    }
     document.getElementById('usb-product').textContent=d.product||T('unnamed');
     document.getElementById('usb-uac').textContent='UAC '+d.uac_version;
     document.getElementById('usb-rate').textContent=d.sample_rate+' Hz';

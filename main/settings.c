@@ -11,6 +11,43 @@ static const char *TAG = "settings";
 
 #define NVS_NAMESPACE  "airplay"
 #define NVS_KEY_VOLUME "volume_db"
+#define NVS_KEY_AIRPLAY_VOLUME "ap_vol_db"
+
+
+  esp_err_t settings_get_airplay_volume(float *volume_db) {
+    if (!volume_db) {
+      return ESP_ERR_INVALID_ARG;
+    }
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+    if (err != ESP_OK) {
+      return ESP_ERR_NOT_FOUND;
+    }
+    int32_t vol_fixed = 0;
+    err = nvs_get_i32(nvs, NVS_KEY_AIRPLAY_VOLUME, &vol_fixed);
+    nvs_close(nvs);
+    if (err != ESP_OK) {
+      return ESP_ERR_NOT_FOUND;
+    }
+    *volume_db = (float)vol_fixed / 100.0f;
+    return ESP_OK;
+  }
+
+  esp_err_t settings_set_airplay_volume(float volume_db) {
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+      return err;
+    }
+    int32_t vol_fixed = (int32_t)(volume_db * 100.0f);
+    err = nvs_set_i32(nvs, NVS_KEY_AIRPLAY_VOLUME, vol_fixed);
+    if (err == ESP_OK) {
+      err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+    return err;
+  }
+
 #ifdef CONFIG_BT_A2DP_ENABLE
 #define NVS_KEY_BT_VOLUME "bt_vol"
 #endif
@@ -61,6 +98,7 @@ esp_err_t settings_init(void) {
   if (err == ESP_OK) {
     int32_t vol_fixed;
     err = nvs_get_i32(nvs, NVS_KEY_VOLUME, &vol_fixed);
+#define NVS_KEY_AIRPLAY_VOLUME "ap_vol_db"
     if (err == ESP_OK) {
       g_volume_db = (float)vol_fixed / 100.0f;
       g_volume_loaded = true;
@@ -159,6 +197,7 @@ esp_err_t settings_persist_volume(void) {
 
   int32_t vol_fixed = (int32_t)(g_volume_db * 100.0f);
   err = nvs_set_i32(nvs, NVS_KEY_VOLUME, vol_fixed);
+#define NVS_KEY_AIRPLAY_VOLUME "ap_vol_db"
   if (err == ESP_OK) {
     err = nvs_commit(nvs);
   }

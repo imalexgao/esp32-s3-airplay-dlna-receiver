@@ -153,6 +153,12 @@ static volatile uint32_t s_usb_feed_skips = 0; /* TEMP DIAG: dropped, !s_streami
 /* Resampler rebuild request. Only the playback task may call
  * audio_resample_init/reset once it is running — see playback_task(). */
 static volatile bool resample_reinit_needed = false;
+/* DLNA owns the output: the playback task must stay out of the SHARED
+ * resampler/FIFO entirely (DLNA feeds the same chain from its own task).
+ * Without this gate, feed_pcm and playback_task race on the single
+ * resampler instance after a source handover — corrupted audio (slow /
+ * fast / raspy) and, in the worst case, a panic. */
+static volatile bool s_dlna_streaming = false;
 
 static uint8_t s_out_iface = 0;
 static uint8_t s_out_alt = 0;
@@ -181,6 +187,15 @@ static int s_fu_info_n = 0;
 
 /* ── Device-volume state (web slider = the card's own FU volume) ─────────── */
 static float s_device_db = 0.0f;    /* -30..max dB, web slider (persisted) */
+static float s_user_volume_db = 0.0f; /* user-set ceiling (web/HID); BISECT:
+                                         forced 0 dB (pure v1.1.5 behavior) so
+                                         a restore of the saved value can never
+                                         promote 0 dB into storage. FU readback
+                                         and DLNA SetVolume are clamped to this
+                                         ceiling: a card that ignores host FU
+                                         writes (KEF EGG) can never blow past
+                                         the web limit, and a reconnecting DLNA
+                                         app cannot reset volume to 100%. */
 static int32_t s_device_q15 = 32768; /* software device gain (Q15) */
 static uint8_t s_spk_fu = 0;         /* primary speaker-path FU id (0 = none) */
 static volatile float s_fu_vol_db = 0.0f; /* live FU volume readback (dB) */
@@ -199,6 +214,16 @@ static int s_out_subslot =
 static uint32_t s_out_rate =
     OUTPUT_RATE;              /* rate the chosen alt actually runs */
 static uint8_t s_uac_ver = 0; /* UAC spec major version: 1 or 2 */
+
+/* Serializes access to the SHARED audio chain (resampler + FIFO) between the
+ * AirPlay playback task and the DLNA feed_pcm caller.  The source arbiter
+ * keeps only one source logically active, but the DLNA pull task can still be
+ * draining its last frames (dlna_stream_pause is async) when the AirPlay
+ * playback task is re-enabled after a preemption — without this mutex the two
+ * can both call audio_resample_* / fifo_push concurrently and crash the
+ * device (observed as "panic" after an iPhone preempts an Android DLNA
+ * session).  Created in audio_output_init(). */
+static SemaphoreHandle_t s_chain_mutex = NULL;
 
 /* ── User-chosen output format (v1.1) ───────────────────────────────────────
  * The web UI picks one of six rate x bits combinations. Resolved once per
@@ -1960,6 +1985,10 @@ void audio_output_set_device_volume_db(float volume_db) {
   if (volume_db > 0.0f) {
     volume_db = 0.0f;
   }
+  /* A user-initiated set (web slider / HID remote key / boot restore) is also
+   * the CEILING: no automatic source (FU readback, DLNA SetVolume) may raise
+   * the effective gain above this, so the web limit is always honored. */
+  s_user_volume_db = volume_db;
   s_device_db = volume_db;
   /* Digital gain only — the card's FU is driven to its max before the stream
    * starts and is NOT written while streaming (KEF EGG ignores runtime FU
@@ -1967,6 +1996,25 @@ void audio_output_set_device_volume_db(float volume_db) {
    * 0 dB = full-scale pass-through, same as Windows at 100%. */
   recompute_device_q15();
   ESP_LOGI(TAG, "Device volume: %.1f dB (digital gain)", s_device_db);
+}
+
+/* External/automatic volume set (DLNA SetVolume, app-controlled) — clamped to
+ * the user's ceiling and never allowed to raise it. */
+void audio_output_set_device_volume_db_limited(float volume_db) {
+  if (volume_db < -30.0f) {
+    volume_db = -30.0f;
+  }
+  if (volume_db > 0.0f) {
+    volume_db = 0.0f;
+  }
+  if (volume_db > s_user_volume_db) {
+    ESP_LOGI(TAG, "DLNA/external SetVolume %.1f dB clamped to user ceiling %.1f dB",
+             volume_db, s_user_volume_db);
+    volume_db = s_user_volume_db;
+  }
+  s_device_db = volume_db;
+  recompute_device_q15();
+  ESP_LOGI(TAG, "Device volume (external): %.1f dB (digital gain)", s_device_db);
 }
 
 float audio_output_get_device_volume_db(void) {
@@ -2018,9 +2066,19 @@ void audio_output_refresh_fu_volume(void) {
       rd = 0.0f;
     }
     s_fu_vol_db = rd;
-    s_device_db = rd;
-    settings_set_volume(s_device_db);
-    ESP_LOGI(TAG, "FU volume readback: %.1f dB (persisted)", s_device_db);
+    /* Follow a remote/knob change on the card's own FU — but NEVER above the
+     * user's web-slider ceiling.  KEF EGG keeps its FU at max and ignores host
+     * FU writes; without this clamp the readback would silently overwrite the
+     * web limit with the card's full volume, and any digital glitch would be
+     * reproduced at full blast. */
+    float new_db = (rd < s_user_volume_db) ? rd : s_user_volume_db;
+    if (new_db != s_device_db) {
+      s_device_db = new_db;
+      recompute_device_q15();
+      settings_set_volume(s_device_db);
+      ESP_LOGI(TAG, "FU volume readback: %.1f dB (clamped to ceiling %.1f dB)",
+               rd, s_user_volume_db);
+    }
   }
 }
 
@@ -2139,6 +2197,17 @@ static void playback_task(void *arg) {
     return;
   }
   while (true) {
+    if (s_dlna_streaming) {
+      /* DLNA owns the chain: stay completely out of the shared resampler and
+       * FIFO.  Pending AirPlay flush/reinit requests are serviced once DLNA
+       * releases the output. */
+      vTaskDelay(1);
+      continue;
+    }
+    /* Shared-chain section 1: re-init / flush. BISECT: chain mutex disabled. */
+    if (false && s_chain_mutex) {
+      xSemaphoreTake(s_chain_mutex, portMAX_DELAY);
+    }
     if (resample_reinit_needed) {
       resample_reinit_needed = false;
       audio_resample_init((uint32_t)source_rate, s_out_rate, 2);
@@ -2148,6 +2217,9 @@ static void playback_task(void *arg) {
       audio_resample_reset();
       fifo_reset();
       fifo_prefill_silence();
+    }
+    if (false && s_chain_mutex) {
+      xSemaphoreGive(s_chain_mutex);
     }
     /* No FIFO-level polling here: fifo_push() blocks on the stream buffer until
      * the iso callbacks free space, which paces this loop to the device. */
@@ -2161,6 +2233,10 @@ static void playback_task(void *arg) {
          * (setup_device rebuilds the resampler and prefills the FIFO). */
         taskYIELD();
         continue;
+      }
+      /* Shared-chain section 2: resample -> VU -> volume -> channel -> FIFO. */
+      if (false && s_chain_mutex) {
+        xSemaphoreTake(s_chain_mutex, portMAX_DELAY);
       }
       int16_t *play_buf = pcm;
       size_t play_samples = samples;
@@ -2187,6 +2263,9 @@ static void playback_task(void *arg) {
         }
       } else {
         taskYIELD();
+      }
+      if (false && s_chain_mutex) {
+        xSemaphoreGive(s_chain_mutex);
       }
     } else {
       led_audio_feed(silence, FRAME_SAMPLES);
@@ -2233,18 +2312,43 @@ esp_err_t audio_output_usb_host_feed_pcm(const int16_t *pcm, size_t samples,
     return ESP_OK; /* no device attached; drop (standby) */
   }
 
+  /* Serialize the whole chain against the AirPlay playback task: during a
+   * preemption the DLNA pull task may still be draining its last frames while
+   * the playback task is re-enabled, and both would otherwise hit the shared
+   * resampler/FIFO at once (crash). fifo_push blocks on the ISO consumer, so
+   * this lock is held at most for one paced frame — microseconds of contention
+   * at handover, never a stall. */
+  if (s_chain_mutex) {
+    xSemaphoreTake(s_chain_mutex, portMAX_DELAY);
+  }
+
   dlna_cp(18); /* before resample init */
-  if (rate > 0 && rate != s_feed_rate) {
+  /* Rebuild decision keys off the SHARED resampler's REAL current input rate,
+   * not the AirPlay-side source_rate mirror.  A previous AirPlay session
+   * leaves the resampler built for e.g. 44100->48000 while source_rate may
+   * already equal this feed's 48000, so a source_rate comparison would skip
+   * the rebuild and 48 kHz DLNA audio would be resampled as 44.1 kHz: heard
+   * as the DLNA track running fast with raspy aliasing noise after an
+   * AirPlay preemption.  audio_resample_init is idempotent for equal rates
+   * (it drops to the direct path), so rebuilding here is always safe. */
+  if (rate > 0 && (audio_resample_get_input_rate() != rate ||
+                   resample_reinit_needed)) {
+    audio_output_set_source_rate((int)rate);
     audio_resample_init(rate, s_out_rate, 2);
     s_feed_rate = rate;
+    resample_reinit_needed = false;
   }
 
   int16_t *play_buf = (int16_t *)pcm;
   size_t play_samples = samples;
   if (audio_resample_is_active()) {
     dlna_cp(19); /* resampling */
-    play_samples = audio_resample_process(pcm, samples, s_feed_rbuf,
-                                          MAX_RESAMPLE_FRAMES);
+    /* Capacity must cover the whole decode frame: a full MP3 frame is 1152
+     * frames and even the worst-case ratio stays well under 2048.  Passing
+     * MAX_RESAMPLE_FRAMES (sized for the AirPlay 352-frame chunk) truncates a
+     * 1152-frame DLNA frame to ~401 output frames — every ~24 ms of audio was
+     * being squeezed into ~8 ms, heard as the track racing ahead ~2.9x. */
+    play_samples = audio_resample_process(pcm, samples, s_feed_rbuf, 2048);
     play_buf = s_feed_rbuf;
   } else {
     /* Direct path (source rate == device rate): copy into our own scratch
@@ -2260,6 +2364,9 @@ esp_err_t audio_output_usb_host_feed_pcm(const int16_t *pcm, size_t samples,
     play_buf = s_feed_rbuf;
   }
   if (play_samples == 0) {
+    if (s_chain_mutex) {
+      xSemaphoreGive(s_chain_mutex);
+    }
     return ESP_OK;
   }
 
@@ -2278,6 +2385,9 @@ esp_err_t audio_output_usb_host_feed_pcm(const int16_t *pcm, size_t samples,
     fifo_push(s_feed_conv, (size_t)n);
   }
   dlna_cp(24); /* after fifo */
+  if (s_chain_mutex) {
+    xSemaphoreGive(s_chain_mutex);
+  }
   /* TEMP DIAG: throttle to ~2 logs/s */
   static uint32_t s_feed_dbg = 0;
   if ((s_feed_dbg++ % 200) == 0) {
@@ -2304,14 +2414,22 @@ esp_err_t audio_output_init(void) {
    * timing code; real problems (late drops, stuck anchors) are W-level and
    * still show. Comment out when debugging timing. */
   esp_log_level_set("audio_time", ESP_LOG_WARN);
-  s_pcm = xStreamBufferCreateWithCaps(FIFO_TARGET_BYTES, 1,
-                                      MALLOC_CAP_SPIRAM);
+  /* A/B bisect step 1: FIFO back to internal DRAM (pure v1.1.5 behavior).
+   * The DLNA integration moved this to SPIRAM to save DRAM; iPhone AirPlay
+   * preempts + rapid reconnect were being dropped on this build, and the pure
+   * v1.1.5 (DRAM FIFO) firmware plays the same iPhone/NetEase session fine.
+   * Keeping the SPIRAM fallback so a DRAM allocation failure still boots. */
+  s_pcm = xStreamBufferCreate(FIFO_TARGET_BYTES, 1);
   if (!s_pcm) {
-    ESP_LOGW(TAG, "SPIRAM FIFO failed, falling back to internal RAM");
-    s_pcm = xStreamBufferCreate(FIFO_TARGET_BYTES, 1);
+    ESP_LOGW(TAG, "DRAM FIFO failed, falling back to SPIRAM");
+    s_pcm = xStreamBufferCreateWithCaps(FIFO_TARGET_BYTES, 1,
+                                        MALLOC_CAP_SPIRAM);
   }
   s_ctrl_sem = xSemaphoreCreateBinary();
   if (!s_pcm || !s_ctrl_sem)
+    return ESP_ERR_NO_MEM;
+  s_chain_mutex = xSemaphoreCreateMutex();
+  if (!s_chain_mutex)
     return ESP_ERR_NO_MEM;
 
   /* Task that turns headset HID button presses into DACP commands (off the USB
@@ -2374,6 +2492,13 @@ void audio_output_start(void) {
 
 void audio_output_flush(void) {
   flush_requested = true;
+}
+
+/* Toggle DLNA ownership of the output chain.  While active, the AirPlay
+ * playback task parks itself (no resampler/FIFO access) so the DLNA feed
+ * task has exclusive use of the shared audio state. */
+void audio_output_set_dlna_active(bool active) {
+  s_dlna_streaming = active;
 }
 
 void audio_output_set_source_rate(int rate) {

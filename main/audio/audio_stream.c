@@ -1,10 +1,11 @@
-#include <inttypes.h>
+﻿#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "audio_stream.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "audio_buffer.h"
 #include "audio_decoder.h"
@@ -20,6 +21,18 @@
 #define AUDIO_DECODE_PUSH_TIMEOUT_MS 6000U
 
 static const char *TAG = "audio_stream";
+
+// Post-FLUSH diagnostic window: log per-frame fate for 3 s after a
+// seek_flush so we can see exactly where the iOS post-FLUSH stream dies.
+#define DIAG_FLUSH_WINDOW_US 3000000ULL
+#define DIAG_AFTER_FLUSH(state, fmt, ...)                                     \
+  do {                                                                        \
+    if ((state) && (state)->seek_flush_us != 0 &&                             \
+        (esp_timer_get_time() - (state)->seek_flush_us) <                     \
+            (int64_t)DIAG_FLUSH_WINDOW_US) {                                  \
+      ESP_LOGI(TAG, "[diag] " fmt, ##__VA_ARGS__);                            \
+    }                                                                         \
+  } while (0)
 
 extern const audio_stream_ops_t audio_stream_realtime_ops;
 extern const audio_stream_ops_t audio_stream_buffered_ops;
@@ -57,8 +70,27 @@ bool audio_stream_accept_timestamp(audio_receiver_state_t *state,
   // Deliberately checked before decrypt/decode in the buffered TCP task so
   // old-track backlog is drained from the socket without decoder CPU or PCM
   // ring use.
+  //
+  // ROOT-CAUSE FIX: iOS does NOT send a fresh 0x57 anchor right after FLUSH —
+  // anchor packets are periodic (~2 s).  Waiting for one after every FLUSH
+  // drops the whole post-FLUSH stream: the buffer never fills, playout never
+  // starts, iOS hits its latency timeout, tears the session down, renegotiates
+  // the codec (ALAC -> AAC) and the device crashes decoding under the reduced
+  // DRAM.  The first DATA frame after a seek_flush IS the new anchor — accept
+  // it and open the gate.  set_anchor_time() then re-aligns the timeline when
+  // the periodic anchor does arrive (Path B handles the normal lead-time
+  // delta).
   if (state->discard_all_until_anchor) {
-    return false;
+    if (state->arm_gate_on_next_anchor) {
+      state->arm_gate_on_next_anchor = false;
+      state->discard_all_until_anchor = false;
+      state->seek_flush_us = 0;
+      ESP_LOGI(TAG,
+               "accept_timestamp: first data frame after FLUSH opens the gate");
+    } else {
+      DIAG_AFTER_FLUSH(state, "DROP blanket-gated ts=%" PRIu32, timestamp);
+      return false;
+    }
   }
 
   // Post-seek RTP window gate: discard frames outside [discard_before_rtp,
@@ -69,17 +101,22 @@ bool audio_stream_accept_timestamp(audio_receiver_state_t *state,
   // Each self-disarms on the first frame that passes it.
   if (state->discard_before_rtp_valid) {
     if ((int32_t)(timestamp - state->discard_before_rtp) < 0) {
+      DIAG_AFTER_FLUSH(state, "DROP below-window ts=%" PRIu32 " below=%" PRIu32,
+                       timestamp, state->discard_before_rtp);
       return false; // below lower bound — forward-seek stale frame
     }
     state->discard_before_rtp_valid = false;
   }
   if (state->discard_above_rtp_valid) {
     if ((int32_t)(timestamp - state->discard_above_rtp) > 0) {
+      DIAG_AFTER_FLUSH(state, "DROP above-window ts=%" PRIu32 " above=%" PRIu32,
+                       timestamp, state->discard_above_rtp);
       return false; // above upper bound — backward-seek stale frame
     }
     state->discard_above_rtp_valid = false;
   }
 
+  DIAG_AFTER_FLUSH(state, "ACCEPT ts=%" PRIu32, timestamp);
   return true;
 }
 
@@ -152,8 +189,12 @@ bool audio_stream_process_accepted_frame(audio_receiver_state_t *state,
       audio_decoder_decode(state->decoder, audio_data, audio_len, decode_buffer,
                            capacity_samples, &info);
   if (decoded_samples <= 0) {
+    DIAG_AFTER_FLUSH(state, "DECODE_FAIL len=%u dec=%d",
+                     (unsigned)audio_len, decoded_samples);
     return false;
   }
+  DIAG_AFTER_FLUSH(state, "DECODED %d smp len=%u", decoded_samples,
+                   (unsigned)audio_len);
 
   int channels =
       info.channels > 0 ? info.channels : state->stream->format.channels;
@@ -187,8 +228,11 @@ bool audio_stream_process_accepted_frame(audio_receiver_state_t *state,
   }
 
   state->stats.packets_decoded++;
-  return audio_stream_push_timeline_pcm(state, timestamp, decode_buffer,
-                                        (size_t)decoded_samples, channels);
+  bool pushed = audio_stream_push_timeline_pcm(
+      state, timestamp, decode_buffer, (size_t)decoded_samples, channels);
+  DIAG_AFTER_FLUSH(state, "PUSH ts=%" PRIu32 " %s", timestamp,
+                   pushed ? "ok" : "NO-SPACE");
+  return pushed;
 }
 
 bool audio_stream_process_frame(audio_receiver_state_t *state,

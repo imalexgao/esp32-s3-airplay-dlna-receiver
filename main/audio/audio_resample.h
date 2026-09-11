@@ -33,6 +33,16 @@ size_t audio_resample_process(const int16_t *in, size_t in_frames, int16_t *out,
 bool audio_resample_is_active(void);
 
 /**
+ * Get the sample rate the shared resampler is currently built for (input
+ * side).  Zero means never initialized.  The DLNA feed path uses this as the
+ * authoritative "what will happen to my data right now" check: source_rate
+ * (the AirPlay-side mirror) can drift away from the real resampler state after
+ * a preemption, which is how 48 kHz DLNA audio previously ran through a stale
+ * 44100->48000 resampler and came out fast + aliased.
+ */
+uint32_t audio_resample_get_input_rate(void);
+
+/**
  * Reset resampler state (call on stream flush).
  */
 void audio_resample_reset(void);

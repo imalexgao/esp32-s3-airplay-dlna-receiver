@@ -14,13 +14,32 @@ rtsp_conn_t *rtsp_conn_create(void) {
     return NULL;
   }
 
-  /* AirPlay (phone/source) session volume: starts at 0 dB (full) and is
-   * controlled by the source during the session via RTSP SET_PARAMETER. It is
-   * deliberately independent from the device volume (settings): the phone
-   * volume must NOT move the web slider and must NOT overwrite the persisted
-   * device volume. See rtsp_conn_set_volume(). */
-  conn->volume_db = 0.0f; /* 0 dB = full */
-  conn->volume_q15 = 32768;
+  /* AirPlay (phone/source) session volume: starts at the level the user last
+   * set on the phone (persisted separately from the device volume), so a
+   * reconnect does not jump back to full volume. It is deliberately
+   * independent from the device volume (settings): the phone volume must NOT
+   * move the web slider and must NOT overwrite the persisted device volume.
+   * See rtsp_conn_set_volume(). */
+  float ap_vol = 0.0f; /* 0 dB = full fallback */
+  if (settings_get_airplay_volume(&ap_vol) != ESP_OK) {
+    ap_vol = 0.0f;
+  }
+  if (ap_vol < -30.0f) {
+    ap_vol = -30.0f;
+  }
+  if (ap_vol > 0.0f) {
+    ap_vol = 0.0f;
+  }
+  conn->volume_db = ap_vol;
+  if (ap_vol <= -30.0f) {
+    conn->volume_q15 = 0;
+  } else if (ap_vol >= 0.0f) {
+    conn->volume_q15 = 32768;
+  } else {
+    float normalized = (ap_vol + 30.0f) / 30.0f;
+    float curved = normalized * normalized * normalized;
+    conn->volume_q15 = (int32_t)(curved * 32768.0f);
+  }
 
   conn->data_socket = -1;
   conn->control_socket = -1;
@@ -34,10 +53,11 @@ void rtsp_conn_free(rtsp_conn_t *conn) {
     return;
   }
 
-  /* The device volume (web slider / buttons) is persisted by its own setters
-   * (playback_control_set_volume / settings_persist_volume). The phone volume
-   * is session-scoped and must not be persisted here — it would overwrite the
-   * user's device volume with the source's last volume. */
+  /* Remember the AirPlay/source volume across sessions (persisted in its own
+   * NVS key, never in the device-volume slot), so the next phone connect
+   * starts at the level the user last set instead of full volume. Written on
+   * session end rather than on every SET_PARAMETER to avoid NVS wear. */
+  settings_set_airplay_volume(conn->volume_db);
 
   // Cleanup any resources
   rtsp_conn_cleanup(conn);

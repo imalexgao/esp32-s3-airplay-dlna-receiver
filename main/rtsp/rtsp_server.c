@@ -272,10 +272,17 @@ cleanup:
   close(slot->socket);
   slot->socket = -1;
 
-  // Immediate: stop audio and NTP
-  audio_receiver_stop();
-  audio_output_flush();
-  ntp_clock_stop();
+  // Immediate: stop audio and NTP.  When this client was replaced by a new
+  // client (is_old), do NOT touch the global audio/receiver state — the new
+  // session's SETUP restarts everything, and stopping here races with the new
+  // session's audio_receiver_start() (an old cleanup landing after the new
+  // start would kill the new stream — iOS-to-iOS preemption produced silence
+  // and the new client was kicked within a second).
+  if (!slot->is_old) {
+    audio_receiver_stop();
+    audio_output_flush();
+    ntp_clock_stop();
+  }
 
   bool has_dacp_remote = conn && conn->protocol_version == 1 &&
                          conn->dacp_id[0] != '\0' &&

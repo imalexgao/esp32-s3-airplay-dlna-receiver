@@ -129,6 +129,13 @@ typedef struct audio_receiver_state {
   // ring buffer between FLUSHBUFFERED and the anchor, causing a second flush
   // and doubling the startup delay.
   bool discard_all_until_anchor;
+  // Local timestamp (esp_timer) when the blanket gate was armed by the last
+  // seek_flush.  If the sender never sends SETRATEANCHORTIME after a flush
+  // (it expects the device to start consuming first), the blanket gate times
+  // out after ANCHOR_GRACE_US so the self-bootstrap anchor in
+  // audio_stream_process_frame can start playback — breaking the
+  // device-waits-for-anchor / sender-waits-for-consumption deadlock.
+  int64_t seek_flush_us;
 
   // Snapshot of the expected RTP position taken the moment the sender signals
   // PAUSE (SETRATEANCHORTIME rate=0).  Path B in audio_receiver_set_anchor_time

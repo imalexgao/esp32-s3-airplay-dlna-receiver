@@ -121,6 +121,29 @@ void audio_engine_v2_set_format(audio_engine_v2_t *engine,
   }
   engine->scheduler.preroll_samples =
       (uint32_t)((uint64_t)format->sample_rate * ms / 1000U);
+  engine->normal_preroll_samples = engine->scheduler.preroll_samples;
+  engine->fast_start_armed = false;
+}
+
+void audio_engine_v2_set_fast_start(audio_engine_v2_t *engine, bool enable) {
+  if (!engine || !engine->initialized || engine->format.sample_rate <= 0) {
+    return;
+  }
+  if (enable) {
+    /* ~20 ms -- one or two frames -- so the very first post-FLUSH frames
+     * start playout immediately.  Restored by set_format() on the next
+     * stream. */
+    engine->fast_start_armed = true;
+    engine->scheduler.preroll_samples =
+        (uint32_t)((uint64_t)engine->format.sample_rate * 20U / 1000U);
+    ESP_LOGI(TAG, "fast start armed: preroll=%" PRIu32 " samples",
+             engine->scheduler.preroll_samples);
+  } else if (engine->fast_start_armed) {
+    engine->fast_start_armed = false;
+    if (engine->normal_preroll_samples > 0) {
+      engine->scheduler.preroll_samples = engine->normal_preroll_samples;
+    }
+  }
 }
 
 bool audio_engine_v2_set_frame_samples(audio_engine_v2_t *engine,

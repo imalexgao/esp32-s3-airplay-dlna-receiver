@@ -51,3 +51,8 @@ watchdog2.py
 watchdog3.py
 .ota_done
 醒后必读.md
+
+# Local diagnostic dumps from development
+/_*.txt
+/_*.log
+

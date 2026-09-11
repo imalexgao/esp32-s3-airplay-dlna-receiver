@@ -1,4 +1,4 @@
-#include "rtsp_handlers.h"
+﻿#include "rtsp_handlers.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -14,11 +14,15 @@
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
 #include "sodium.h"
 
 #include "audio_output.h"
 #include "audio_receiver.h"
 #include "audio_stream.h"
+#ifdef CONFIG_DLNA_ENABLE
+#include "dlna/source_arbiter.h"
+#endif
 #ifdef CONFIG_BT_A2DP_ENABLE
 #include "a2dp_sink.h"
 #include "dac.h"
@@ -173,6 +177,7 @@ static bool start_ntp_timing_or_fail(int socket, rtsp_conn_t *conn,
 static bool start_audio_receiver_or_fail(int socket, rtsp_conn_t *conn,
                                          const rtsp_request_t *req,
                                          int64_t stream_type) {
+  int64_t t0 = esp_timer_get_time();
 #ifdef CONFIG_BT_A2DP_ENABLE
   // Tear the BT radio down here rather than waiting for the coex task's
   // PLAYING event: that lands ~600 ms after RECORD, by which time these tasks
@@ -181,9 +186,15 @@ static bool start_audio_receiver_or_fail(int socket, rtsp_conn_t *conn,
     (void)bt_a2dp_sink_suspend();
   }
 #endif
+  int64_t t1 = esp_timer_get_time();
   audio_receiver_set_stream_type((audio_stream_type_t)stream_type);
+  int64_t t2 = esp_timer_get_time();
   esp_err_t err = audio_receiver_start_stream(
       conn->data_port, conn->control_port, conn->buffered_port);
+  int64_t t3 = esp_timer_get_time();
+  ESP_LOGI(TAG, "SETUP timer: bt_suspend=%lldus set_type=%lldus start_stream=%lldus err=%s",
+           (long long)(t1 - t0), (long long)(t2 - t1), (long long)(t3 - t2),
+           err == ESP_OK ? "OK" : esp_err_to_name(err));
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to start audio receiver: %s", esp_err_to_name(err));
     rtsp_send_response(socket, conn, 500, "Internal Error", req->cseq, NULL,
@@ -463,9 +474,9 @@ int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
 
   ESP_LOGD(TAG, "<- %s %s", req.method, req.path);
 
-  // Extract DACP headers if present (AirPlay 1 only — modern iOS AirPlay 2
+  // Extract DACP headers if present (AirPlay 1 only 鈥?modern iOS AirPlay 2
   // does not send these; it uses MRP for remote control instead).
-  // parse_raw_header uses a static buffer — copy before calling again.
+  // parse_raw_header uses a static buffer 鈥?copy before calling again.
   if (conn->dacp_id[0] == '\0') {
     const char *val = parse_raw_header(raw_request, raw_len, "DACP-ID:");
     if (val) {
@@ -513,7 +524,7 @@ static void handle_options(int socket, rtsp_conn_t *conn,
                            const rtsp_request_t *req, const uint8_t *raw,
                            size_t raw_len) {
   // AirPlay v1: handle Apple-Challenge if present. Triggered by request
-  // shape, so safe unconditionally — iOS in AirPlay 2 mode does not send
+  // shape, so safe unconditionally 鈥?iOS in AirPlay 2 mode does not send
   // this header.
   const char *challenge = parse_raw_header(raw, raw_len, "Apple-Challenge:");
   if (challenge) {
@@ -628,7 +639,7 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
     // Both type 96 (realtime/UDP) and type 103 (buffered/TCP) use PTP-based
     // anchor timing with internal hardware-latency compensation in
     // compute_early_us().  Report 0 so the sender does NOT also adjust its
-    // anchor — otherwise the hardware pipeline delay is subtracted twice and
+    // anchor 鈥?otherwise the hardware pipeline delay is subtracted twice and
     // the ESP plays ahead of other speakers.  shairport-sync likewise
     // reports no audioLatencies at all.
     plist_dict_array_begin(&p, "audioLatencies");
@@ -950,7 +961,7 @@ static void parse_sdp(rtsp_conn_t *conn, const char *sdp, size_t len) {
   }
 
   // AirPlay v1: parse RSA-encrypted AES key and IV from SDP. Triggered by
-  // SDP shape so safe unconditionally — AirPlay 2 uses HAP-derived keys
+  // SDP shape so safe unconditionally 鈥?AirPlay 2 uses HAP-derived keys
   // and never embeds rsaaeskey in ANNOUNCE.
   const char *rsaaeskey = strcasestr(sdp, "rsaaeskey:");
   const char *aesiv_str = strcasestr(sdp, "aesiv:");
@@ -1207,7 +1218,7 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
 
   // Handle initial SETUP vs stream SETUP
   if (!request_has_streams) {
-    // AirPlay v1: SETUP has no bplist body — transport info is in the header.
+    // AirPlay v1: SETUP has no bplist body 鈥?transport info is in the header.
     // Detected by request shape (Transport: header present); AirPlay 2's
     // initial SETUP has neither streams nor a Transport header.
     if (is_v1_transport_setup) {
@@ -1237,7 +1248,7 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
       rtsp_send_response(socket, conn, 200, "OK", req->cseq, transport_response,
                          NULL, 0);
 
-      // Configure audio format — RAOP default is ALAC 44100/352
+      // Configure audio format 鈥?RAOP default is ALAC 44100/352
       audio_format_t format = {0};
       rtsp_codec_configure(2, &format, 44100, 352); // ct=2 is ALAC
       audio_receiver_set_format(&format);
@@ -1252,6 +1263,18 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
     }
 
     ESP_LOGI(TAG, "SETUP: Initial connection setup (no streams)");
+
+    /* A fresh AirPlay connection is starting: preempt any active DLNA session
+     * RIGHT HERE, on the very first SETUP, not at PLAY.  If we wait until PLAY
+     * (RECORD), the iPhone's whole SETUP -> RECORD -> stream-SETUP handshake
+     * runs while the DLNA pull task is still decoding/feeding and stealing
+     * CPU/WiFi, the stream SETUP response lands ~400 ms late, and iOS reads
+     * that as a slow/failed device and tears the session down within a second
+     * ("杩炰笂灏辫韪?).  Pausing DLNA now costs nothing (it is already
+     * playing) and gives the iPhone a clean, fast handshake. */
+#ifdef CONFIG_DLNA_ENABLE
+    source_arbiter_notify_airplay_setup();
+#endif
 
     if (is_bplist) {
       uint8_t plist_body[128];
@@ -1306,19 +1329,19 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   // reference receiver applies this, so playing at the anchor directly puts
   // this device ~250 ms AHEAD of the rest of a multi-room group (issue #54:
   // an empirical +300 ms offset on a build that subtracted 46 ms of
-  // hardware latency — net +254 ms — gave near-perfect sync; 11025 samples
+  // hardware latency 鈥?net +254 ms 鈥?gave near-perfect sync; 11025 samples
   // is 250.0 ms).  Use the sender's latencyMin from the SETUP stream dict
   // when present and sane, else the AirPlay default of 11025.
   // Buffered streams (type 103) schedule playout with the anchor directly.
   // Only applied on the AirPlay 2 (bplist SETUP) path; the AirPlay 1 path
-  // keeps its existing behavior (0) — no field evidence either way there.
+  // keeps its existing behavior (0) 鈥?no field evidence either way there.
   if (!is_bplist || buffered) {
     audio_receiver_set_playout_latency_samples(0);
   } else {
     int64_t latency_min = 0;
     const char *latency_src = "default";
     // latencyMin is a per-stream key inside the SETUP streams[] dict, not a
-    // top-level key — read it the same way as ct/sr/spf above.
+    // top-level key 鈥?read it the same way as ct/sr/spf above.
     if (body && body_len > 0) {
       bplist_kv_info_t kv[16];
       size_t kv_count = 0;
@@ -1383,6 +1406,12 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
                        NULL, 0);
   }
 
+  // A fresh AirPlay connection is starting: preempt any active DLNA session
+  // now (before RTP flows) so the two sources never overlap on the USB FIFO.
+#ifdef CONFIG_DLNA_ENABLE
+  source_arbiter_notify_airplay_setup();
+#endif
+
   // Enable NACK retransmission if we know the client's control port
   if (conn->client_control_port > 0 && conn->client_ip != 0) {
     audio_receiver_set_client_control(conn->client_ip,
@@ -1390,7 +1419,7 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   }
 
 #ifdef CONFIG_BT_A2DP_ENABLE
-  // Apply saved AirPlay volume before playback starts — the DAC may have
+  // Apply saved AirPlay volume before playback starts 鈥?the DAC may have
   // been left at a different level by Bluetooth A2DP.
   dac_set_volume(conn->volume_db);
 #endif
@@ -1414,8 +1443,7 @@ static void handle_record(int socket, rtsp_conn_t *conn,
            conn->stream_paused);
 
 #ifdef CONFIG_BT_A2DP_ENABLE
-  // Ensure DAC is at the saved AirPlay volume before any audio plays —
-  // Bluetooth A2DP may have left it at a different level.
+  // Ensure DAC is at the saved AirPlay volume before any audio plays 鈥?  // Bluetooth A2DP may have left it at a different level.
   dac_set_volume(conn->volume_db);
 #endif
 
@@ -1642,7 +1670,7 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
     event_data.metadata.has_artwork = true;
     has_metadata = true;
 #else
-    // Artwork reception disabled — ignore it.  The md txt record already asks
+    // Artwork reception disabled 鈥?ignore it.  The md txt record already asks
     // senders not to transmit cover art, but some send it regardless.
     ESP_LOGD(TAG, "Ignoring artwork (%s, %zu bytes): disabled in config",
              req->content_type, body_len);
@@ -1749,7 +1777,7 @@ static void handle_flush(int socket, rtsp_conn_t *conn,
   (void)raw;
   (void)raw_len;
 
-  // Plain AirPlay 1 FLUSH — always immediate.
+  // Plain AirPlay 1 FLUSH 鈥?always immediate.
   ESP_LOGI(TAG, "FLUSH received");
   audio_receiver_seek_flush();
   audio_output_flush();
@@ -1766,11 +1794,11 @@ static void handle_flushbuffered(int socket, rtsp_conn_t *conn,
   size_t body_len = req->body_len;
 
   // AirPlay 2 FLUSHBUFFERED carries an optional bplist with:
-  //   flushFromSeq / flushFromTS  — first sequence/timestamp to discard
-  //   flushUntilSeq / flushUntilTS — last sequence/timestamp to discard
+  //   flushFromSeq / flushFromTS  鈥?first sequence/timestamp to discard
+  //   flushUntilSeq / flushUntilTS 鈥?last sequence/timestamp to discard
   //
-  // If flushFromSeq is absent → immediate flush (stop and discard everything).
-  // If flushFromSeq is present → deferred flush: keep playing existing buffered
+  // If flushFromSeq is absent 鈫?immediate flush (stop and discard everything).
+  // If flushFromSeq is present 鈫?deferred flush: keep playing existing buffered
   //   content until flushUntilTS is reached, then discard and start fresh.
   //   The phone simultaneously starts streaming the new track, which fills the
   //   buffer beyond flushUntilTS; the decode task detects the boundary and
@@ -1794,8 +1822,7 @@ static void handle_flushbuffered(int socket, rtsp_conn_t *conn,
                "FLUSHBUFFERED deferred: fromSeq=%" PRId64 " fromTS=%" PRId64
                " untilSeq=%" PRId64 " untilTS=%" PRId64,
                flush_from_seq, flush_from_ts, flush_until_seq, flush_until_ts);
-      // Arm the deferred flush.  Do NOT flush the audio output immediately —
-      // let it drain naturally to the boundary so the current track finishes.
+      // Arm the deferred flush.  Do NOT flush the audio output immediately 鈥?      // let it drain naturally to the boundary so the current track finishes.
       audio_receiver_set_deferred_flush((uint32_t)flush_until_ts);
     } else {
       ESP_LOGI(TAG, "FLUSHBUFFERED immediate (missing from/until fields)");
@@ -1854,7 +1881,7 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
       has_streams; // Keep session ready if only streams torn down
 
   if (!has_streams) {
-    // Full teardown — server cleanup will emit RTSP_EVENT_DISCONNECTED
+    // Full teardown 鈥?server cleanup will emit RTSP_EVENT_DISCONNECTED
     // when the TCP connection closes.
     // For v1 sessions, keep the DACP session alive across teardown so the
     // grace period can probe mDNS to differentiate pause from real
@@ -1954,7 +1981,7 @@ static void handle_setpeers(int socket, rtsp_conn_t *conn,
     ESP_LOGI(TAG, "SETPEERS: got bplist");
   }
 
-  // PTP peers changed — the PTP clock will re-lock to the new master on
+  // PTP peers changed 鈥?the PTP clock will re-lock to the new master on
   // its own.  Do NOT reset the audio timing anchor here: the anchor's
   // network_time_ns is in absolute PTP time, and compute_early_us
   // auto-corrects via ptp_clock_get_offset_ns() as PTP re-locks.

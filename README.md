@@ -6,6 +6,8 @@
 - **安卓手机 / 第三方播放器（网易云、Plexamp、BubbleUPnP 等）** → DLNA/UPnP
 - 无需模拟输出，**USB 口直连**自带 USB 解码的音箱（如 KEF EGG 等有源音箱）即插即用
 
+> **姊妹项目**：本项目的 AirPlay 协议栈源自 [ESP32-S3 AirPlay2 Receiver Pro](https://github.com/imalexgao/esp32-s3-airplay2-receiver-pro)（纯 AirPlay 单协议、更轻量）；本项目在其基础上扩展了 DLNA/UPnP 与多格式解码，为独立的双协议项目。单协议轻量版与双协议全能版各自独立发布、互不干扰。
+
 ---
 
 ## 硬件要求
@@ -51,8 +53,11 @@
 ### 后台界面
 - 中/英双语，深色主题
 - 音量条（设备端，独立于手机音量）、音频编码状态（当前 USB 声卡实际编码情况）
+- **推流协议实时显示**：当前正在发声的是 AirPlay 2 / DLNA / 空闲，随抢断实时切换
 - 采样率/位深选择（44.1k/48k × 16/24bit，重启生效）
+- 延时模式（普通 180ms / 低延时 60ms / 极速 20ms 预滚，下次播放生效）
 - 遥控布局选择：苹果标准 / KEF EGG
+- OTA 在线升级（后台直接上传固件）
 - 设备信息、格式状态诊断
 
 ## 兼容边界与已知特例
@@ -62,6 +67,13 @@
 3. **96kHz 采样率**不支持（会导致 USB 枚举异常），后台已移除该选项。
 4. **APE** 暂不支持（Plex 不支持、BubbleUPnP 会转码为 WAV、ESP32 无成熟嵌入式 APE 解码器）。
 5. 遥控器对音量的控制与手机音量**解耦**：遥控器/后台音量只作用于设备端，手机音量独立。
+
+## 版本历史
+
+### v1.0.0（里程碑 · 稳定版）
+- **无 QPlay 标签**的稳定基线：iOS/安卓跨协议抢断正常、双 iOS 互抢可逼退、音量记忆正常
+- 含：AirPlay 2 + DLNA/UPnP、ALAC/OGG/FLAC/AAC/MP3/WAV 六格式解码、音量解耦与记忆、三通道音量覆盖、遥控布局（苹果标准/KEF EGG）、双语后台、延时模式、OTA、推流协议实时显示
+- 后续若探索 QPlay 等实验性功能，可随时 `git checkout v1.0.0` 退回此里程碑
 
 ## 构建
 
@@ -94,14 +106,14 @@ pio run -e esp32s3-usbhost -t upload   # 串口烧录
 | MP3 解码 | minimp3 | Public Domain |
 | ALAC 解码 | [Apple macosforge/alac](https://github.com/macosforge/alac) | Apache-2.0（已打 PSRAM 补丁） |
 
-**相比纯 AirPlay 接收器的主要改进**：
+**相比纯 AirPlay 接收器（v1.1.5）的主要改进**：
 
 - **双协议共存**：AirPlay 2 + DLNA 同一固件、同一后台，安卓/苹果生态都能推流
 - **DLNA 六格式全覆盖**：WAV/MP3/AAC/FLAC/OGG/ALAC，含 24bit 与 48kHz
-- **音量体系重构**：设备端音量与手机音量完全解耦，后台可独立限制最大音量
+- **音量体系重构**：设备端音量与手机音量完全解耦，后台可独立限制最大音量，音量记忆
 - **USB 声卡三通道覆盖**：解决部分音箱（KEF EGG）AirPlay 下响度过低的问题
-- **KEF EGG 遥控器键位适配**：后台可切换苹果标准/EGG 布局
-- **完整汉化 + 中英双语**后台
+- **KEF EGG 遥控器键位适配**：后台可切换苹果标准/EGG 布局（或编译 KEF 专版锁死）
+- **推流协议实时显示**、延时模式（20/60/180ms 预滚）、OTA 在线升级、完整汉化 + 中英双语后台
 
 ## License
 

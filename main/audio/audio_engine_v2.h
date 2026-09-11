@@ -20,6 +20,11 @@ typedef struct {
   audio_format_t format;
   bool initialized;
   bool playing;
+  /* Fast-start (post-FLUSH) state: normal_preroll_samples holds the
+   * configured pre-roll; set_fast_start(true) swaps in ~20 ms so playout
+   * begins almost immediately after a FLUSH. */
+  bool fast_start_armed;
+  uint32_t normal_preroll_samples;
   uint64_t blocks_inserted;
   uint64_t blocks_rejected;
   uint64_t concealed_samples;
@@ -63,6 +68,18 @@ void audio_engine_v2_deinit(audio_engine_v2_t *engine);
 uint32_t audio_engine_v2_begin_epoch(audio_engine_v2_t *engine, int64_t now_us);
 void audio_engine_v2_set_format(audio_engine_v2_t *engine,
                                 const audio_format_t *format);
+/* Temporarily drop the pre-roll to ~20 ms so playout starts almost
+ * immediately after a FLUSH.  iOS uses a fast-start handshake when it
+ * preempts another source: it sends a couple of frames after FLUSH and
+ * expects audio within ~100 ms, or it tears the session down.  The normal
+ * configured pre-roll is restored on the next set_format(). */
+void audio_engine_v2_set_fast_start(audio_engine_v2_t *engine, bool enable);
+/* Temporarily drop the pre-roll to ~20 ms so playout starts almost
+ * immediately after a FLUSH.  iOS uses a fast-start handshake when it
+ * preempts another source: it sends a couple of frames after FLUSH and
+ * expects audio within ~100 ms, or it tears the session down.  The normal
+ * configured pre-roll is restored on the next set_format(). */
+void audio_engine_v2_set_fast_start(audio_engine_v2_t *engine, bool enable);
 /* Switch codecs on the shared slot pool.  Discards anything held, so call it
  * at stream start, before PCM for the new stream arrives. */
 bool audio_engine_v2_set_frame_samples(audio_engine_v2_t *engine,

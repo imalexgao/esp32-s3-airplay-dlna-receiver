@@ -21,10 +21,12 @@
 #include "ota.h"
 #include "log_stream.h"
 #include "dlna/dlna_upnp.h"
+#include "audio/audio_receiver.h"
 #ifdef CONFIG_DLNA_ENABLE
 #include "dlna/dlna_stream.h"
 #include "dlna/dlna_renderer.h"
 #include "dlna/dlna_upnp.h"
+#include "dlna/source_arbiter.h"
 #endif
 #include "rtsp_server.h"
 #include "rtsp_events.h"
@@ -1507,6 +1509,19 @@ static esp_err_t usb_audio_status_handler(httpd_req_t *req) {
                             dlna_upnp_get_soap_play());
     cJSON_AddNumberToObject(json, "dlna_crash_stage",
                             dlna_stream_get_crash_stage());
+    { /* AirPlay RTP receiver stats: are packets arriving, being decoded,
+       * dropped, or failing decryption? Incrementals tell the story during
+       * a live AirPlay session. */
+      audio_stats_t st;
+      audio_receiver_get_stats(&st);
+      cJSON_AddNumberToObject(json, "rtp_rx", st.packets_received);
+      cJSON_AddNumberToObject(json, "rtp_decoded", st.packets_decoded);
+      cJSON_AddNumberToObject(json, "rtp_dropped", st.packets_dropped);
+      cJSON_AddNumberToObject(json, "rtp_decrypt_err", st.decrypt_errors);
+      cJSON_AddNumberToObject(json, "rtp_underruns", st.buffer_underruns);
+      cJSON_AddNumberToObject(json, "rtp_overruns", st.buffer_overruns);
+      cJSON_AddNumberToObject(json, "rtp_late", st.late_frames);
+    }
     cJSON_AddNumberToObject(json, "dlna_ogg_frames",
                             dlna_stream_get_ogg_frames());
     cJSON_AddNumberToObject(json, "dlna_alac_frames",
@@ -1553,6 +1568,23 @@ static esp_err_t usb_audio_status_handler(httpd_req_t *req) {
       }
     }
     cJSON_AddStringToObject(json, "product", st.product);
+  }
+  /* 当前推流协议 (active streaming protocol): airplay / dlna / none.
+   * The arbiter owns the output; connection alone is not ownership. */
+  {
+    const char *proto = "none";
+#ifdef CONFIG_DLNA_ENABLE
+    switch (source_arbiter_get_active()) {
+      case SOURCE_ARBITER_AIRPLAY: proto = "airplay"; break;
+      case SOURCE_ARBITER_DLNA:    proto = "dlna";    break;
+      default:                     proto = "none";    break;
+    }
+#else
+    if (source_arbiter_airplay_playing()) {
+      proto = "airplay";
+    }
+#endif
+    cJSON_AddStringToObject(json, "active_source", proto);
   }
   /* Volume telemetry: the AirPlay/source volume (phone), the independent
    * device volume (web slider = the card's own volume, live-read so a remote
@@ -2743,7 +2775,10 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_open_sockets = 2;   // BT: tighter socket budget (LWIP 12)
   config.send_wait_timeout = 10; // BT/WiFi coexistence slows TCP drain
 #else
-  config.max_open_sockets = 3; // Limit to save lwIP socket slots for AirPlay
+  /* 3 sockets is the baseline budget; QPlay was removed (its multi-connection
+   * session + the extra sockets hurt the AirPlay preemption handshake and
+   * squeezed DRAM/LWIP). Standard DLNA/UPnP (SOAP + GENA + stream) fits. */
+  config.max_open_sockets = 3;
 #endif
   config.lru_purge_enable = true; // Reclaim stale sockets when all are in use
   // Slots are allocated up front and httpd_register_uri_handler failures are

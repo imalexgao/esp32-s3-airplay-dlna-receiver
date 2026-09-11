@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "esp_err.h"
 #include <stdbool.h>
@@ -57,6 +57,10 @@ typedef struct {
   uint32_t late_frames;
   uint16_t last_seq;
   uint32_t last_timestamp;
+  // Drop reasons from the pre-decode timestamp gates (diagnostics):
+  uint32_t gate_anchor_drops; /* discard_all_until_anchor blanket gate */
+  uint32_t gate_before_drops; /* below discard_before_rtp (forward seek)  */
+  uint32_t gate_above_drops;  /* above discard_above_rtp (backward seek)  */
 } audio_stats_t;
 
 /**
@@ -183,10 +187,18 @@ uint32_t audio_receiver_get_advertised_latency_us(void);
 void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
                                     uint32_t rtp_time);
 
+
 /**
  * Enable or pause playout scheduling.
  */
 void audio_receiver_set_playing(bool playing);
+
+/**
+ * Current network-clock offset (PTP or NTP, whichever the active anchor uses),
+ * in nanoseconds, or 0 when no network clock is locked.  network = local +
+ * offset; used to bootstrap a clock map from a locally-measured time.
+ */
+int64_t audio_receiver_get_network_offset_ns(void);
 
 /**
  * Check if playback is currently active (not paused).

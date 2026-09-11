@@ -8,6 +8,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 
 #include "audio/audio_output.h"
 #include "dlna/dlna_renderer.h"
@@ -201,6 +202,19 @@ static char s_uri[DLNA_URI_MAX] = {0};
 static uint32_t s_rate = 44100;
 static uint32_t s_channels = 2;
 static uint32_t s_bits = 16;
+
+/* Update the stream sample rate.  Any PCM already queued in the USB FIFO was
+ * fed at the previous rate — if the rate just jumped (e.g. the first MP3 frame
+ * reports 48 kHz after the sniffed header said 44.1 kHz) that stale block
+ * would be played back shifted, heard as a slowdown + pop.  Drop it so the
+ * resampler restarts cleanly; the playback task re-prefills silence. */
+static void dlna_set_rate(uint32_t rate) {
+  if (rate > 0 && rate != s_rate) {
+    s_rate = rate;
+    audio_output_flush();
+    ESP_LOGI(TAG, "Source rate %u Hz", rate);
+  }
+}
 
 /* Decoded-PCM accounting for position/duration (WAV mode). */
 static volatile uint64_t s_pcm_frames_played = 0;
@@ -576,7 +590,7 @@ static size_t aac_feed(const uint8_t *buf, size_t len) {
       if (irc < 0) {
         ESP_LOGE(TAG, "faad init rc=%ld (drop frame)", irc);
       } else {
-        if (f_rate > 0) s_rate = f_rate;
+        if (f_rate > 0) dlna_set_rate((uint32_t)f_rate);
         if (f_ch > 0) s_channels = f_ch;
         ESP_LOGI(TAG, "faad init: %lu Hz %u ch obj=%ld", f_rate, f_ch, irc);
       }
@@ -597,7 +611,7 @@ static size_t aac_feed(const uint8_t *buf, size_t len) {
         uint32_t total = (uint32_t)fi.samples; /* interleaved total */
         uint32_t frames = ch > 0 ? total / ch : 0;
         if (frames > 0 && pcm) {
-          if (fi.samplerate > 0) s_rate = fi.samplerate;
+          if (fi.samplerate > 0) dlna_set_rate((uint32_t)fi.samplerate);
           s_channels = ch;
           dlna_cp(14); /* before feed_pcm */
           feed_pcm((const int16_t *)pcm, frames);
@@ -675,8 +689,7 @@ static size_t mp3_feed(const uint8_t *buf, size_t len) {
       break; /* need more input */
     }
     if (info.hz > 0 && (uint32_t)info.hz != s_rate) {
-      s_rate = (uint32_t)info.hz;
-      ESP_LOGI(TAG, "MP3 rate %u Hz", s_rate);
+      dlna_set_rate((uint32_t)info.hz);
     }
     if (info.channels > 0 && (uint32_t)info.channels != s_channels) {
       s_channels = (uint32_t)info.channels;
@@ -743,7 +756,7 @@ static void ogg_feed(const uint8_t *buf, size_t len) {
       s_ogg_opened = true;
       s_ogg_open_rc = 1;
       stb_vorbis_info info = stb_vorbis_get_info(s_ogg);
-      s_rate = info.sample_rate ? (uint32_t)info.sample_rate : 44100;
+      dlna_set_rate(info.sample_rate ? (uint32_t)info.sample_rate : 44100);
       s_channels = (uint32_t)info.channels;
       s_bits = 16;
       ESP_LOGI(TAG, "OGG opened: %u Hz %u ch (header used=%d)", s_rate,
@@ -1139,7 +1152,7 @@ static void alac_feed(const uint8_t *buf, size_t len) {
         s_alac_open_rc = 1;
         alac_dec_get_info(s_alac, &s_alac_rate, &s_alac_channels,
                           &s_alac_bits);
-        s_rate = s_alac_rate ? s_alac_rate : 44100;
+        dlna_set_rate(s_alac_rate ? s_alac_rate : 44100);
         s_channels = s_alac_channels ? s_alac_channels : 2;
         s_bits = 16;
         uint32_t pcm_frames = s_alac_frame_length * s_alac_channels;
@@ -1223,7 +1236,7 @@ static void stream_task(void *arg) {
         client = NULL;
       }
       snprintf(s_uri, sizeof(s_uri), "%s", msg.uri);
-      s_rate = msg.arg > 0 ? (uint32_t)msg.arg : 44100;
+      dlna_set_rate(msg.arg > 0 ? (uint32_t)msg.arg : 44100);
       s_channels = 2;
       s_bits = 16;
       s_pcm_frames_played = 0;
@@ -1321,7 +1334,7 @@ static void stream_task(void *arg) {
           s_active = false;
           continue;
         }
-        s_rate = (uint32_t)s_flac->sampleRate;
+        dlna_set_rate((uint32_t)s_flac->sampleRate);
         s_channels = (uint32_t)s_flac->channels;
         s_bits = 16;
         ESP_LOGI(TAG, "FLAC opened: %u Hz %u ch", s_rate, s_channels);
@@ -1378,7 +1391,7 @@ static void stream_task(void *arg) {
         int r = wav_consume(&wav, sniff, (size_t)got, s_pcm_buf,
                             PCM_CHUNK_FRAMES * 2, &frames);
         if (r > 0 && frames > 0) {
-          s_rate = wav.rate;
+          dlna_set_rate(wav.rate);
           s_channels = wav.channels;
           s_bits = wav.bits;
           feed_pcm(s_pcm_buf, frames);
@@ -1453,10 +1466,18 @@ static void stream_task(void *arg) {
         }
         continue;
       }
+      int64_t http_t0 = esp_timer_get_time();
       int n = esp_http_client_read(client, (char *)s_http_buf, HTTP_BUF_SIZE);
+      int64_t http_read_us = esp_timer_get_time() - http_t0;
       if (n <= 0) {
         ESP_LOGI(TAG, "stream ended (read=%d)", n);
         break;
+      }
+      /* Diagnose slow HTTP pulls: if the server trickles data, read blocks for
+       * a long time and the FIFO underruns regardless of decode speed. */
+      if (s_read_calls < 10 || (s_read_calls % 100) == 0) {
+        ESP_LOGI(TAG, "http: n=%d took=%lld ms",
+                 n, (long long)(http_read_us / 1000));
       }
       if (fmt == FMT_WAV) {
         size_t frames = 0;
